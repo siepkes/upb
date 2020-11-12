@@ -15,35 +15,44 @@ typedef struct {
   char str[1];  /* Null-terminated string data follows. */
 } str_t;
 
+typedef union {
+  int64_t sint;
+  uint64_t uint;
+  double dbl;
+  float flt;
+  bool boolean;
+  str_t *str;
+} upb_defaultval;
+
+#define FFLAG_HASDEFAULT 1
+#define FFLAG_EXTENSION 2
+#define FFLAG_PACKED 4
+#define FFLAG_LAZY 8
+#define FFLAG_PROTO3OPTIONAL 16
+
+typedef enum {
+  FPARENT_FILE = 0,
+  FPARENT_ONEOF = 1,
+  FPARENT_MSG = 2,
+} fielddef_parent_type;
+
 struct upb_fielddef {
-  const upb_filedef *file;
-  const upb_msgdef *msgdef;
-  const char *full_name;
-  const char *json_name;
+  const char *name;   /* full_name, NULL, json_name, NULL */
   union {
-    int64_t sint;
-    uint64_t uint;
-    double dbl;
-    float flt;
-    bool boolean;
-    str_t *str;
-  } defaultval;
-  const upb_oneofdef *oneof;
+    const upb_filedef *file;     /* For extensions. */
+    const upb_oneofdef *oneof;   /* For fields in a oneof. */
+    const upb_msgdef *msgdef;    /* For other fields. */
+  } parent;
   union {
     const upb_msgdef *msgdef;
     const upb_enumdef *enumdef;
     const google_protobuf_FieldDescriptorProto *unresolved;
   } sub;
-  uint32_t number_;
-  uint16_t index_;
+  uint32_t selector_base;  /* TODO: rm when when handlers are gone. */
   uint16_t layout_index;
-  uint32_t selector_base;  /* Used to index into a upb::Handlers table. */
-  bool is_extension_;
-  bool lazy_;
-  bool packed_;
-  bool proto3_optional_;
-  upb_descriptortype_t type_;
-  upb_label_t label_;
+  uint8_t flags;
+  fielddef_parent_type parent_type;
+  upb_defaultval defaultval[];  /* len = (flags & UPB_FFLAG_HASDEFAULT) */
 };
 
 struct upb_msgdef {
@@ -315,7 +324,7 @@ const char *upb_fielddef_fullname(const upb_fielddef *f) {
 }
 
 upb_fieldtype_t upb_fielddef_type(const upb_fielddef *f) {
-  switch (f->type_) {
+  switch (f->type) {
     case UPB_DESCRIPTOR_TYPE_DOUBLE:
       return UPB_TYPE_DOUBLE;
     case UPB_DESCRIPTOR_TYPE_FLOAT:
@@ -350,7 +359,7 @@ upb_fieldtype_t upb_fielddef_type(const upb_fielddef *f) {
 }
 
 upb_descriptortype_t upb_fielddef_descriptortype(const upb_fielddef *f) {
-  return f->type_;
+  return f->type;
 }
 
 uint32_t upb_fielddef_index(const upb_fielddef *f) {
@@ -358,23 +367,23 @@ uint32_t upb_fielddef_index(const upb_fielddef *f) {
 }
 
 upb_label_t upb_fielddef_label(const upb_fielddef *f) {
-  return f->label_;
+  return f->label;
 }
 
 uint32_t upb_fielddef_number(const upb_fielddef *f) {
-  return f->number_;
+  return f->number;
 }
 
 bool upb_fielddef_isextension(const upb_fielddef *f) {
-  return f->is_extension_;
+  return f->parent_type == FPARENT_FILE;
 }
 
 bool upb_fielddef_lazy(const upb_fielddef *f) {
-  return f->lazy_;
+  return f->flags & FFLAG_LAZY;
 }
 
 bool upb_fielddef_packed(const upb_fielddef *f) {
-  return f->packed_;
+  return f->flags & FFLAG_PACKED;
 }
 
 const char *upb_fielddef_name(const upb_fielddef *f) {
@@ -390,20 +399,36 @@ uint32_t upb_fielddef_selectorbase(const upb_fielddef *f) {
 }
 
 const upb_filedef *upb_fielddef_file(const upb_fielddef *f) {
-  return f->file;
+  switch (f->parent_type) {
+    case FPARENT_FILE:
+      return f->parent.file;
+    case FPARENT_ONEOF:
+      return f->parent.oneof->parent->file;
+    case FPARENT_MSG:
+      return f->parent.msgdef->file;
+  }
+  UPB_UNREACHABLE();
 }
 
 const upb_msgdef *upb_fielddef_containingtype(const upb_fielddef *f) {
-  return f->msgdef;
+  switch (f->parent_type) {
+    case FPARENT_FILE:
+      return NULL;
+    case FPARENT_ONEOF:
+      return f->parent.oneof->parent;
+    case FPARENT_MSG:
+      return f->parent.msgdef;
+  }
+  UPB_UNREACHABLE();
 }
 
 const upb_oneofdef *upb_fielddef_containingoneof(const upb_fielddef *f) {
-  return f->oneof;
+  return f->parent_type == FPARENT_ONEOF ? f->parent.oneof : NULL;
 }
 
 const upb_oneofdef *upb_fielddef_realcontainingoneof(const upb_fielddef *f) {
-  if (!f->oneof || upb_oneofdef_issynthetic(f->oneof)) return NULL;
-  return f->oneof;
+  return f->parent_type == FPARENT_ONEOF && !f->parent.oneof.synthetic
+      ? f->parent.oneof : NULL;
 }
 
 static void chkdefaulttype(const upb_fielddef *f, int ctype) {
@@ -1590,7 +1615,7 @@ static void create_fielddef(
 
     f = (upb_fielddef*)&m->fields[m->field_count++];
     f->msgdef = m;
-    f->is_extension_ = false;
+    f->is_extension = false;
 
     if (upb_strtable_lookup(&m->ntof, shortname, NULL)) {
       symtab_errf(ctx, "duplicate field name (%s)", shortname);
@@ -1634,26 +1659,28 @@ static void create_fielddef(
   } else {
     /* extension field. */
     f = (upb_fielddef*)&ctx->file->exts[ctx->file->ext_count++];
-    f->is_extension_ = true;
+    f->is_extension = true;
     symtab_add(ctx, full_name, pack_def(f, UPB_DEFTYPE_FIELD));
   }
 
   f->full_name = full_name;
   f->json_name = json_name;
   f->file = ctx->file;
-  f->type_ = (int)google_protobuf_FieldDescriptorProto_type(field_proto);
-  f->label_ = (int)google_protobuf_FieldDescriptorProto_label(field_proto);
-  f->number_ = field_number;
-  f->oneof = NULL;
-  f->proto3_optional_ =
-      google_protobuf_FieldDescriptorProto_proto3_optional(field_proto);
+  f->type = (int)google_protobuf_FieldDescriptorProto_type(field_proto);
+  f->label = (int)google_protobuf_FieldDescriptorProto_label(field_proto);
+  f->number = field_number;
+  f->flags = 0;
+
+  if (google_protobuf_FieldDescriptorProto_proto3_optional(field_proto)) {
+    f->flags |= UPB_FFLAG_PROTO3OPTIONAL;
+  }
 
   /* We can't resolve the subdef or (in the case of extensions) the containing
    * message yet, because it may not have been defined yet.  We stash a pointer
    * to the field_proto until later when we can properly resolve it. */
   f->sub.unresolved = field_proto;
 
-  if (f->label_ == UPB_LABEL_REQUIRED && f->file->syntax == UPB_SYNTAX_PROTO3) {
+  if (f->label == UPB_LABEL_REQUIRED && f->file->syntax == UPB_SYNTAX_PROTO3) {
     symtab_errf(ctx, "proto3 fields cannot be required (%s)", f->full_name);
   }
 
@@ -1681,14 +1708,14 @@ static void create_fielddef(
     f->oneof = oneof;
 
     oneof->field_count++;
-    if (f->proto3_optional_) {
+    if (f->proto3_optional) {
       oneof->synthetic = true;
     }
-    CHK_OOM(upb_inttable_insert2(&oneof->itof, f->number_, v, alloc));
+    CHK_OOM(upb_inttable_insert2(&oneof->itof, f->number, v, alloc));
     CHK_OOM(upb_strtable_insert3(&oneof->ntof, name.data, name.size, v, alloc));
   } else {
     f->oneof = NULL;
-    if (f->proto3_optional_) {
+    if (f->proto3_optional) {
       symtab_errf(ctx, "field with proto3_optional was not in a oneof (%s)",
                   f->full_name);
     }
@@ -1698,17 +1725,15 @@ static void create_fielddef(
     google_protobuf_FieldDescriptorProto_options(field_proto) : NULL;
 
   if (options && google_protobuf_FieldOptions_has_packed(options)) {
-    f->packed_ = google_protobuf_FieldOptions_packed(options);
+    f->packed = google_protobuf_FieldOptions_packed(options);
   } else {
     /* Repeated fields default to packed for proto3 only. */
-    f->packed_ = upb_fielddef_isprimitive(f) &&
-        f->label_ == UPB_LABEL_REPEATED && f->file->syntax == UPB_SYNTAX_PROTO3;
+    f->packed = upb_fielddef_isprimitive(f) &&
+        f->label == UPB_LABEL_REPEATED && f->file->syntax == UPB_SYNTAX_PROTO3;
   }
 
-  if (options) {
-    f->lazy_ = google_protobuf_FieldOptions_lazy(options);
-  } else {
-    f->lazy_ = false;
+  if (options && google_protobuf_FieldOptions_lazy(options)) {
+    f->flags |= UPB_FFLAG_LAZY;
   }
 }
 
@@ -1883,7 +1908,7 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
   upb_strview name;
   const google_protobuf_FieldDescriptorProto *field_proto = f->sub.unresolved;
 
-  if (f->is_extension_) {
+  if (f->is_extension) {
     if (!google_protobuf_FieldDescriptorProto_has_extendee(field_proto)) {
       symtab_errf(ctx, "extension for field '%s' had no extendee",
                   f->full_name);
@@ -1893,7 +1918,7 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
     f->msgdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_MSG);
   }
 
-  if ((upb_fielddef_issubmsg(f) || f->type_ == UPB_DESCRIPTOR_TYPE_ENUM) &&
+  if ((upb_fielddef_issubmsg(f) || f->type == UPB_DESCRIPTOR_TYPE_ENUM) &&
       !google_protobuf_FieldDescriptorProto_has_type_name(field_proto)) {
     symtab_errf(ctx, "field '%s' is missing type name", f->full_name);
   }
@@ -1902,7 +1927,7 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
 
   if (upb_fielddef_issubmsg(f)) {
     f->sub.msgdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_MSG);
-  } else if (f->type_ == UPB_DESCRIPTOR_TYPE_ENUM) {
+  } else if (f->type == UPB_DESCRIPTOR_TYPE_ENUM) {
     f->sub.enumdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_ENUM);
   }
 
