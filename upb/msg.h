@@ -76,19 +76,34 @@ typedef struct upb_msglayout {
 
 /** upb_msg *******************************************************************/
 
-/* Internal members of a upb_msg.  We can change this without breaking binary
- * compatibility.  We put these before the user's data.  The user's upb_msg*
- * points after the upb_msg_internal. */
+/* Internal members of a upb_msg that track unknown fields and/or extensions.
+ * None of this is exposed to the ABI, so we can change this without breaking
+ * binary compatibility.*/
 
 typedef struct {
-  uint32_t len;
-  uint32_t size;
+  /* Total size of this structure, including the data that follows.
+   * Must be aligned to 8, which is alignof(upb_msg_ext) */
+  uint32_t size; 
+
+  /* Unknown data grows forward from the beginning to unknown_end.
+   * Extension data grows backward from size to ext_begin.
+   * When the two meet, we're out of data and have to realloc. */
+  uint32_t unknown_end;
+  uint32_t ext_begin;
   /* Data follows. */
-} upb_msg_unknowndata;
+} upb_msg_internaldata;
+
+typedef struct {
+  uint32_t fieldnum;
+  uint8_t descriptortype;
+  bool is_repeated;
+  upb_value data;
+} upb_msg_ext;
 
 /* Used when a message is not extendable. */
 typedef struct {
-  upb_msg_unknowndata *unknown;
+  upb_msg_internaldata *internal;
+  /* Message data follows. */
 } upb_msg_internal;
 
 /* Maps upb_fieldtype_t -> memory size. */
@@ -129,6 +144,20 @@ bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
 
 /* Returns a reference to the message's unknown data. */
 const char *upb_msg_getunknown(const upb_msg *msg, size_t *len);
+
+/* Adds the given extension data to the given message. |ext| is copied into the
+ * message instance. This logically replaces any previously-added extension with
+ * this number */
+upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, uint32_t fieldnum,
+                                     upb_arena *arena);
+
+/* Returns an array of extensions for this message. Note: the array is
+ * ordered in reverse relative to the order of creation. */
+const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count);
+
+/* Returns an extension for the given field number, or NULL if no extension
+ * exists for this field number. */
+const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum);
 
 /** Hasbit access *************************************************************/
 
@@ -208,7 +237,6 @@ typedef struct {
   uintptr_t data;   /* Tagged ptr: low 3 bits of ptr are lg2(elem size). */
   size_t len;   /* Measured in elements. */
   size_t size;  /* Measured in elements. */
-  uint64_t junk;
 } upb_array;
 
 UPB_INLINE const void *_upb_array_constptr(const upb_array *arr) {
