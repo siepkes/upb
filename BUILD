@@ -1,3 +1,28 @@
+# Copyright (c) 2009-2021, Google LLC
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * Neither the name of Google LLC nor the
+#       names of its contributors may be used to endorse or promote products
+#       derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL Google LLC BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 load(
     "//bazel:build_defs.bzl",
     "UPB_DEFAULT_COPTS",
@@ -56,18 +81,19 @@ cc_library(
     name = "upb",
     srcs = [
         "upb/decode.c",
-        "upb/decode.int.h",
+        "upb/decode_internal.h",
         "upb/encode.c",
         "upb/msg.c",
-        "upb/msg.h",
+        "upb/msg_internal.h",
         "upb/table.c",
-        "upb/table.int.h",
+        "upb/table_internal.h",
         "upb/upb.c",
-        "upb/upb.int.h",
+        "upb/upb_internal.h",
     ],
     hdrs = [
         "upb/decode.h",
         "upb/encode.h",
+        "upb/msg.h",
         "upb/upb.h",
         "upb/upb.hpp",
     ],
@@ -83,11 +109,12 @@ cc_library(
 cc_library(
     name = "fastdecode",
     srcs = [
-        "upb/decode.int.h",
+        "upb/decode_internal.h",
         "upb/decode_fast.c",
         "upb/decode_fast.h",
         "upb/msg.h",
-        "upb/upb.int.h",
+        "upb/msg_internal.h",
+        "upb/upb_internal.h",
     ],
     copts = UPB_DEFAULT_COPTS,
     deps = [
@@ -107,6 +134,7 @@ cc_library(
     hdrs = [
         "upb/decode_fast.h",
         "upb/msg.h",
+        "upb/msg_internal.h",
         "upb/port_def.inc",
         "upb/port_undef.inc",
     ],
@@ -193,7 +221,7 @@ cc_library(
 cc_library(
     name = "table",
     hdrs = [
-        "upb/table.int.h",
+        "upb/table_internal.h",
         "upb/upb.h",
     ],
     visibility = ["//tests:__pkg__"],
