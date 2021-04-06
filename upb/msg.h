@@ -44,6 +44,8 @@
 extern "C" {
 #endif
 
+/** upb_msg *******************************************************************/
+
 typedef void upb_msg;
 
 /* For users these are opaque. They can be obtained from upb_msgdef_layout()
@@ -58,6 +60,26 @@ void upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
 
 /* Returns a reference to the message's unknown data. */
 const char *upb_msg_getunknown(const upb_msg *msg, size_t *len);
+
+/** upb_extreg *******************************************************************/
+
+/* Extension registry: a dynamic data structure that stores a map of:
+ *   (upb_msglayout, number) -> extension info
+ *
+ * Users cannot directly get or put into this map. Users can only add the
+ * extensions from a generated module and pass the extension registry to the
+ * binary decoder.
+ *
+ * A upb_symtab provides a upb_extreg, so any users who use reflection do not
+ * need to populate a upb_extreg directly.
+ */
+
+struct upb_extreg;
+typedef struct upb_extreg upb_extreg;
+
+/* Creates a upb_extreg in the given arena.  The arena must outlive any use of
+ * the extreg. */
+upb_extreg *upb_extreg_new(upb_arena *arena);
 
 #ifdef __cplusplus
 }  /* extern "C" */

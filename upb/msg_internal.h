@@ -90,11 +90,26 @@ typedef struct {
   /* Data follows. */
 } upb_msg_internaldata;
 
+/* The internal representation of an extension is self-describing: it contains
+ * enough information that we can serialize it to binary format without needing
+ * to look it up in a upb_extreg.
+ *
+ * This representation allocates 16 bytes to data on 64-bit platforms.  This is
+ * rather wasteful for scalars (in the extreme case of bool, it wastes 15
+ * bytes). We accept this because we expect messages to be the most common
+ * extension type. */
 typedef struct {
   uint32_t fieldnum;
   uint8_t descriptortype;
   bool is_repeated;
-  upb_value data;
+  union {
+    upb_strview str;
+    struct {
+      upb_msg *msg;
+      const upb_msglayout *layout;
+    } msg;
+    char scalar_data[8];
+  } data;
 } upb_msg_ext;
 
 /* Used when a message is not extendable. */
@@ -152,6 +167,24 @@ const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count);
 /* Returns an extension for the given field number, or NULL if no extension
  * exists for this field number. */
 const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum);
+
+/** upb_extreg ****************************************************************/
+
+typedef struct {
+  uint8_t descriptortype;
+  bool is_repeated;
+  const upb_msglayout *layout;  /* When type == MESSAGE or GROUP */
+} upb_extinfo;
+
+/* Adds the given extension info for message type |l| and field number |num|
+ * into the registry. Returns false if this message type and field number were
+ * already in the map, or if memory allocation fails. */
+bool _upb_extreg_add(const upb_msglayout *l, uint32_t num, upb_extinfo ext);
+
+/* Looks up the extension (if any) defined for message type |l| and field
+ * number |num|.  If an extension was found, copies the field info into |*ext|
+ * and returns true. Otherwise returns false. */
+bool _upb_extreg_get(const upb_msglayout *l, uint32_t num, upb_extinfo *ext);
 
 /** Hasbit access *************************************************************/
 

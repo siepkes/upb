@@ -171,6 +171,17 @@ typedef union {
   uint32_t size;
 } wireval;
 
+/* This is upb_msglayout_field without the "number" field. It is 8 bytes so we
+ * pass it as a function parameter by value. Sync with upb_msglayout_field so
+ * that we can copy one to another in a single load. */
+typedef struct {
+  uint16_t offset;
+  int16_t presence;
+  uint16_t submsg_index;
+  uint8_t descriptortype;
+  uint8_t label;
+} fieldinfo;
+
 static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
                               const upb_msglayout *layout);
 
@@ -298,20 +309,23 @@ static void decode_munge(int type, wireval *val) {
   }
 }
 
-static const upb_msglayout_field *upb_find_field(const upb_msglayout *l,
-                                                 uint32_t field_number) {
-  static upb_msglayout_field none = {0, 0, 0, 0, 0, 0};
-
+static uint64_t decode_findfield(const upb_msglayout *l, uint32_t fieldnum) {
   /* Lots of optimization opportunities here. */
-  int i;
-  if (l == NULL) return &none;
-  for (i = 0; i < l->field_count; i++) {
+  if (l == NULL) return 0;
+  for (int i = 0, n = l->field_count; i < n; i++) {
     if (l->fields[i].number == field_number) {
-      return &l->fields[i];
+      upb_msglayout_field f = l->fields[i];
+      /* We lay this This is intended to compile into a single 64-bit load. */
+      uint64_t field_info = f.offset | (uint64_t)f.presence << 16 |
+                            (uint64_t)f.submsg_index << 32 |
+                            (uint64_t)f.descriptortype << 48 |
+                            (uint64_t)f.label << 56;
+      UPB_ASSERT(field_info);
+      return field_info;
     }
   }
 
-  return &none; /* Unknown field. */
+  return 0; /* Unknown field. */
 }
 
 static upb_msg *decode_newsubmsg(upb_decstate *d, const upb_msglayout *layout,
@@ -482,7 +496,6 @@ static const char *decode_tomap(upb_decstate *d, const char *ptr, upb_msg *msg,
 
   if (!map) {
     /* Lazily create map. */
-    const upb_msglayout *entry = layout->submsgs[field->submsg_index];
     const upb_msglayout_field *key_field = &entry->fields[0];
     const upb_msglayout_field *val_field = &entry->fields[1];
     char key_size = desctype_to_mapsize[key_field->descriptortype];
@@ -582,19 +595,20 @@ static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
                               const upb_msglayout *layout) {
   while (true) {
     uint32_t tag;
-    const upb_msglayout_field *field;
+    uint64_t field_info;
     int field_number;
     int wire_type;
     const char *field_start = ptr;
     wireval val;
     int op;
+    upb_extinfo ext;
 
     UPB_ASSERT(ptr < d->limit_ptr);
     ptr = decode_tag(d, ptr, &tag);
     field_number = tag >> 3;
     wire_type = tag & 7;
 
-    field = upb_find_field(layout, field_number);
+    field_info = decode_findfield(layout, field_number);
 
     switch (wire_type) {
       case UPB_WIRE_TYPE_VARINT:
@@ -699,7 +713,8 @@ static bool decode_top(struct upb_decstate *d, const char *buf, void *msg,
 }
 
 bool _upb_decode(const char *buf, size_t size, void *msg,
-                 const upb_msglayout *l, upb_arena *arena, int options) {
+                 const upb_msglayout *l, const upb_extreg *extreg,
+                 int options, upb_arena *arena) {
   bool ok;
   upb_decstate state;
   unsigned depth = (unsigned)options >> 16;
@@ -719,6 +734,7 @@ bool _upb_decode(const char *buf, size_t size, void *msg,
     state.alias = options & UPB_DECODE_ALIAS;
   }
 
+  state.extreg = extreg;
   state.limit_ptr = state.end;
   state.unknown_msg = NULL;
   state.depth = depth ? depth : 64;
