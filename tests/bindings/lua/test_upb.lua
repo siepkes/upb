@@ -717,6 +717,15 @@ function test_descriptor_error()
   assert_nil(symtab:lookup_msg("ABC"))
 end
 
+function test_duplicate_filename_error()
+  local symtab = upb.SymbolTable()
+  local file = descriptor.FileDescriptorProto()
+  file.name = "test.proto"
+  symtab:add_file(upb.encode(file))
+  -- Second add with the same filename fails.
+  assert_error(function () symtab:add_file(upb.encode(file)) end)
+end
+
 function test_encode_skipunknown()
   -- Test that upb.ENCODE_SKIPUNKNOWN does not encode unknown fields.
   local msg = test_messages_proto3.TestAllTypesProto3{
@@ -736,6 +745,17 @@ end
 function test_json_emit_defaults()
   local msg = test_messages_proto3.TestAllTypesProto3()
   local json = upb.json_encode(msg, {upb.JSONENC_EMITDEFAULTS})
+end
+
+function test_json_locale()
+  local msg = test_messages_proto3.TestAllTypesProto3()
+  msg.optional_double = 1.1
+  local original_locale = os.setlocale(nil)
+  os.setlocale("C")
+  local json = upb.json_encode(msg)
+  os.setlocale("de_DE.utf8")
+  assert_equal(json, upb.json_encode(msg))
+  os.setlocale(original_locale)  -- Restore.
 end
 
 function test_encode_depth_limit()
