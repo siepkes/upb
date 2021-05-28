@@ -268,8 +268,7 @@ static const char *decode_varint64(upb_decstate *d, const char *ptr,
 }
 
 UPB_FORCEINLINE
-static const char *decode_tag(upb_decstate *d, const char *ptr,
-                                   uint32_t *val) {
+static const char *decode_tag(upb_decstate *d, const char *ptr, uint32_t *val) {
   uint64_t byte = (uint8_t)*ptr;
   if (UPB_LIKELY((byte & 0x80) == 0)) {
     *val = byte;
@@ -313,7 +312,7 @@ static uint64_t decode_findfield(const upb_msglayout *l, uint32_t fieldnum) {
   /* Lots of optimization opportunities here. */
   if (l == NULL) return 0;
   for (int i = 0, n = l->field_count; i < n; i++) {
-    if (l->fields[i].number == field_number) {
+    if (l->fields[i].number == fieldnum) {
       upb_msglayout_field f = l->fields[i];
       /* We lay this This is intended to compile into a single 64-bit load. */
       uint64_t field_info = f.offset | (uint64_t)f.presence << 16 |
