@@ -673,16 +673,30 @@ static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
     }
 
     if (op >= 0) {
+      /* Known field, possibly an extension. */
+      upb_msg *field_msg = msg;
+      const upb_msglayout *const *submsgs = layout->submsgs;
+
+      if (UPB_UNLIKELY(_upb_getmode(field) & _UPB_MODE_IS_EXTENSION)) {
+        upb_msg_ext *ext = _upb_msg_getorcreateext(msg, field_number, &d->arena);
+        if (UPB_UNLIKELY(!ext)) decode_err(d);
+        msg = &ext->data;
+        if (_upb_issubmsg(field)) {
+          const upb_submsg_ext *submsg_ext = (const upb_submsg_ext*)field;
+          submsgs = &submsg_ext->submsg;
+        }
+      }
+
       /* Parse, using op for dispatch. */
       switch (_upb_getmode(field)) {
         case _UPB_MODE_ARRAY:
-          ptr = decode_toarray(d, ptr, msg, layout->submsgs, field, &val, op);
+          ptr = decode_toarray(d, ptr, field_msg, submsgs, field, &val, op);
           break;
         case _UPB_MODE_MAP:
-          ptr = decode_tomap(d, ptr, msg, layout->submsgs, field, &val);
+          ptr = decode_tomap(d, ptr, field_msg, submsgs, field, &val);
           break;
         case _UPB_MODE_SCALAR:
-          ptr = decode_tomsg(d, ptr, msg, layout->submsgs, field, &val, op);
+          ptr = decode_tomsg(d, ptr, field_msg, submsgs, field, &val, op);
           break;
         default:
           UPB_UNREACHABLE();

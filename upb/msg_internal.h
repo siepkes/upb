@@ -59,6 +59,11 @@ UPB_INLINE bool _upb_repeated_or_map(const upb_msglayout_field *field) {
   return !(field->mode & _UPB_MODE_SCALAR);
 }
 
+UPB_INLINE bool _upb_issubmsg(const upb_msglayout_field *field) {
+  return field->descriptortype == UPB_DTYPE_MESSAGE ||
+         field->descriptortype == UPB_DTYPE_GROUP;
+}
+
 struct upb_decstate;
 struct upb_msglayout;
 
@@ -179,6 +184,11 @@ const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count);
 const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum);
 
 /** upb_extreg ****************************************************************/
+
+typedef struct {
+  upb_msglayout_field field;
+  const upb_msglayout *submsg;
+} upb_submsg_ext;
 
 /* Adds the given extension info for message type |l| and field number |num|
  * into the registry. Returns false if this message type and field number were

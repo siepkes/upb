@@ -212,10 +212,10 @@ cc_binary(
 make_shell_script(
     name = "gen_test_conformance_upb",
     out = "test_conformance_upb.sh",
-    contents = "external/com_google_protobuf/conformance_test_runner " +
+    contents = "echo '#!/bin/sh\nvalgrind ./tests/conformance_upb' > run.sh && chmod a+x run.sh && external/com_google_protobuf/conformance_test_runner " +
                " --enforce_recommended " +
                " --failure_list ./tests/conformance_upb_failures.txt" +
-               " ./tests/conformance_upb",
+               " ./run.sh",
 )
 
 sh_test(
