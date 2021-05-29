@@ -1075,8 +1075,8 @@ static void make_layout(symtab_addctx *ctx, const upb_msgdef *m) {
     const upb_fielddef *val = upb_msgdef_itof(m, 2);
     fields[0].number = 1;
     fields[1].number = 2;
-    fields[0].label = UPB_LABEL_OPTIONAL;
-    fields[1].label = UPB_LABEL_OPTIONAL;
+    fields[0].mode = _UPB_MODE_SCALAR;
+    fields[1].mode = _UPB_MODE_SCALAR;
     fields[0].presence = 0;
     fields[1].presence = 0;
     fields[0].descriptortype = upb_fielddef_descriptortype(key);
@@ -1114,7 +1114,6 @@ static void make_layout(symtab_addctx *ctx, const upb_msgdef *m) {
 
     field->number = upb_fielddef_number(f);
     field->descriptortype = upb_fielddef_descriptortype(f);
-    field->label = upb_fielddef_label(f);
 
     if (field->descriptortype == UPB_DTYPE_STRING &&
         f->file->syntax == UPB_SYNTAX_PROTO2) {
@@ -1124,9 +1123,19 @@ static void make_layout(symtab_addctx *ctx, const upb_msgdef *m) {
     }
 
     if (upb_fielddef_ismap(f)) {
-      field->label = _UPB_LABEL_MAP;
-    } else if (upb_fielddef_packed(f)) {
-      field->label = _UPB_LABEL_PACKED;
+      field->mode = _UPB_MODE_MAP;
+    } else if (upb_fielddef_isseq(f)) {
+      field->mode = _UPB_MODE_ARRAY;
+    } else {
+      field->mode = _UPB_MODE_SCALAR;
+    }
+
+    if (upb_fielddef_packed(f)) {
+      field->mode |= _UPB_MODE_IS_PACKED;
+    }
+
+    if (upb_fielddef_isextension(f)) {
+      field->mode |= _UPB_MODE_IS_EXTENSION;
     }
 
     if (upb_fielddef_issubmsg(f)) {

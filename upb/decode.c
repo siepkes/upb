@@ -171,17 +171,6 @@ typedef union {
   uint32_t size;
 } wireval;
 
-/* This is upb_msglayout_field without the "number" field. It is 8 bytes so we
- * pass it as a function parameter by value. Sync with upb_msglayout_field so
- * that we can copy one to another in a single load. */
-typedef struct {
-  uint16_t offset;
-  int16_t presence;
-  uint16_t submsg_index;
-  uint8_t descriptortype;
-  uint8_t label;
-} fieldinfo;
-
 static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
                               const upb_msglayout *layout);
 
@@ -308,7 +297,8 @@ static void decode_munge(int type, wireval *val) {
   }
 }
 
-static const upb_msglayout_field *upb_find_field(const upb_msglayout *l,
+static const upb_msglayout_field *upb_find_field(upb_decstate *d,
+                                                 const upb_msglayout *l,
                                                  uint32_t field_number,
                                                  int *last_field_index) {
   static upb_msglayout_field none = {0, 0, 0, 0, 0, 0};
@@ -317,20 +307,30 @@ static const upb_msglayout_field *upb_find_field(const upb_msglayout *l,
 
   size_t idx = (size_t)field_number - 1;  // 0 wraps to SIZE_MAX
   if (idx < l->dense_below) {
+    /* Fastest case: index into dense fields. */
     goto found;
   }
 
-  int last = *last_field_index;
-  for (idx = last; idx < l->field_count; idx++) {
-    if (l->fields[idx].number == field_number) {
-      goto found;
+  if (l->dense_below < l->field_count) {
+    /* Linear search non-dense fields. */
+    int last = *last_field_index;
+    for (idx = last; idx < l->field_count; idx++) {
+      if (l->fields[idx].number == field_number) {
+        goto found;
+      }
+    }
+
+    for (idx = 0; idx < last; idx++) {
+      if (l->fields[idx].number == field_number) {
+        goto found;
+      }
     }
   }
 
-  for (idx = 0; idx < last; idx++) {
-    if (l->fields[idx].number == field_number) {
-      goto found;
-    }
+  if (l->extendable) {
+    const upb_msglayout_field *ext =
+        _upb_extreg_get(d->extreg, l, field_number);
+    if (ext) return ext;
   }
 
   return &none; /* Unknown field. */
@@ -339,7 +339,7 @@ static const upb_msglayout_field *upb_find_field(const upb_msglayout *l,
   UPB_ASSERT(l->fields[idx].number == field_number);
   *last_field_index = idx;
   return &l->fields[idx];
-}
+ }
 
 static upb_msg *decode_newsubmsg(upb_decstate *d,
                                  const upb_msglayout *const *submsgs,
@@ -613,20 +613,19 @@ static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
   int last_field_index = 0;
   while (true) {
     uint32_t tag;
-    uint64_t field_info;
+    const upb_msglayout_field *field;
     int field_number;
     int wire_type;
     const char *field_start = ptr;
     wireval val;
     int op;
-    upb_extinfo ext;
 
     UPB_ASSERT(ptr < d->limit_ptr);
     ptr = decode_tag(d, ptr, &tag);
     field_number = tag >> 3;
     wire_type = tag & 7;
 
-    field = upb_find_field(layout, field_number, &last_field_index);
+    field = upb_find_field(d, layout, field_number, &last_field_index);
 
     switch (wire_type) {
       case UPB_WIRE_TYPE_VARINT:
@@ -651,7 +650,7 @@ static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
       case UPB_WIRE_TYPE_DELIMITED: {
         int ndx = field->descriptortype;
         uint64_t size;
-        if (_upb_isrepeated(field)) ndx += 18;
+        if (_upb_getmode(field) == _UPB_MODE_ARRAY) ndx += 18;
         ptr = decode_varint64(d, ptr, &size);
         if (size >= INT32_MAX ||
             ptr - d->end + (int32_t)size > d->limit) {
@@ -675,17 +674,18 @@ static const char *decode_msg(upb_decstate *d, const char *ptr, upb_msg *msg,
 
     if (op >= 0) {
       /* Parse, using op for dispatch. */
-      switch (field->label) {
-        case UPB_LABEL_REPEATED:
-        case _UPB_LABEL_PACKED:
+      switch (_upb_getmode(field)) {
+        case _UPB_MODE_ARRAY:
           ptr = decode_toarray(d, ptr, msg, layout->submsgs, field, &val, op);
           break;
-        case _UPB_LABEL_MAP:
+        case _UPB_MODE_MAP:
           ptr = decode_tomap(d, ptr, msg, layout->submsgs, field, &val);
           break;
-        default:
+        case _UPB_MODE_SCALAR:
           ptr = decode_tomsg(d, ptr, msg, layout->submsgs, field, &val, op);
           break;
+        default:
+          UPB_UNREACHABLE();
       }
     } else {
     unknown:

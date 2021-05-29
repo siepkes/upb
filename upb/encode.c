@@ -278,7 +278,7 @@ static void encode_scalar(upb_encstate *e, const void *_field_mem,
 static void encode_array(upb_encstate *e, const char *field_mem,
                          const upb_msglayout *m, const upb_msglayout_field *f) {
   const upb_array *arr = *(const upb_array**)field_mem;
-  bool packed = f->label == _UPB_LABEL_PACKED;
+  bool packed = f->mode & _UPB_MODE_IS_PACKED;
   size_t pre_len = e->limit - e->ptr;
 
   if (arr == NULL || arr->len == 0) {
@@ -459,12 +459,18 @@ static void encode_message(upb_encstate *e, const char *msg,
 
   while (f != first) {
     f--;
-    if (_upb_isrepeated(f)) {
-      encode_array(e, msg + f->offset, m, f);
-    } else if (f->label == _UPB_LABEL_MAP) {
-      encode_map(e, msg + f->offset, m, f);
-    } else {
-      encode_scalarfield(e, msg, m, f);
+    switch (_upb_getmode(f)) {
+      case _UPB_MODE_ARRAY:
+        encode_array(e, msg + f->offset, m, f);
+        break;
+      case _UPB_MODE_MAP:
+        encode_map(e, msg + f->offset, m, f);
+        break;
+      case _UPB_MODE_SCALAR:
+        encode_scalarfield(e, msg, m, f);
+        break;
+      default:
+        UPB_UNREACHABLE();
     }
   }
 

@@ -209,6 +209,7 @@ void upb_msg_clear(upb_msg *msg, const upb_msgdef *m) {
   _upb_msg_clear(msg, upb_msgdef_layout(m));
 }
 
+#include <stdio.h>
 bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
                   const upb_symtab *ext_pool, const upb_fielddef **out_f,
                   upb_msgval *out_val, size_t *iter) {
@@ -236,6 +237,9 @@ bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
       if (upb_fielddef_ismap(f)) {
         if (upb_map_size(test.map_val) == 0) continue;
       } else if (upb_fielddef_isseq(f)) {
+        if ((uintptr_t)test.array_val < 0xff) {
+          fprintf(stderr, "field: %s, yo: %p\n", upb_fielddef_fullname(f), (void*)test.array_val);
+        }
         if (upb_array_size(test.array_val) == 0) continue;
       }
     }

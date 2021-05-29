@@ -29,21 +29,35 @@ extern "C" {
  * members are public so generated code can initialize them, but users MUST NOT
  * read or write any of its members. */
 
-/* These aren't real labels according to descriptor.proto, but in the table we
- * use these for map/packed fields instead of UPB_LABEL_REPEATED. */
-enum {
-  _UPB_LABEL_MAP = 4,
-  _UPB_LABEL_PACKED = 7  /* Low 3 bits are common with UPB_LABEL_REPEATED. */
-};
-
 typedef struct {
   uint32_t number;
   uint16_t offset;
   int16_t presence;       /* If >0, hasbit_index.  If <0, ~oneof_index. */
   uint16_t submsg_index;  /* undefined if descriptortype != MESSAGE or GROUP. */
   uint8_t descriptortype;
-  uint8_t label;          /* google.protobuf.Label or _UPB_LABEL_* above. */
+  uint8_t mode;           /* upb_fieldmode below with flags from upb_labelflags */
 } upb_msglayout_field;
+
+typedef enum {
+  _UPB_MODE_MAP = 0,
+  _UPB_MODE_ARRAY = 1,
+  _UPB_MODE_SCALAR = 2,
+} upb_fieldmode;
+
+/* Extra flags on the mode field. */
+enum upb_labelflags {
+  _UPB_MODE_IS_PACKED = 4,
+  _UPB_MODE_IS_EXTENSION = 8,
+};
+
+UPB_INLINE upb_fieldmode _upb_getmode(const upb_msglayout_field *field) {
+  return (upb_fieldmode)(field->mode & 3);
+}
+
+UPB_INLINE bool _upb_repeated_or_map(const upb_msglayout_field *field) {
+  /* This works because upb_fieldmode has no value 3. */
+  return !(field->mode & _UPB_MODE_SCALAR);
+}
 
 struct upb_decstate;
 struct upb_msglayout;
@@ -100,15 +114,10 @@ typedef struct {
  * bytes). We accept this because we expect messages to be the most common
  * extension type. */
 typedef struct {
-  uint32_t fieldnum;
-  uint8_t descriptortype;
-  bool is_repeated;
+  const upb_msglayout_field *field;
   union {
     upb_strview str;
-    struct {
-      upb_msg *msg;
-      const upb_msglayout *layout;
-    } msg;
+    void *ptr;
     char scalar_data[8];
   } data;
 } upb_msg_ext;
@@ -171,21 +180,18 @@ const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum);
 
 /** upb_extreg ****************************************************************/
 
-typedef struct {
-  uint8_t descriptortype;
-  bool is_repeated;
-  const upb_msglayout *layout;  /* When type == MESSAGE or GROUP */
-} upb_extinfo;
-
 /* Adds the given extension info for message type |l| and field number |num|
  * into the registry. Returns false if this message type and field number were
  * already in the map, or if memory allocation fails. */
-bool _upb_extreg_add(const upb_msglayout *l, uint32_t num, upb_extinfo ext);
+bool _upb_extreg_add(upb_extreg *r, const upb_msglayout *l,
+                     const upb_msglayout_field *f);
 
 /* Looks up the extension (if any) defined for message type |l| and field
  * number |num|.  If an extension was found, copies the field info into |*ext|
  * and returns true. Otherwise returns false. */
-bool _upb_extreg_get(const upb_msglayout *l, uint32_t num, upb_extinfo *ext);
+const upb_msglayout_field *_upb_extreg_get(const upb_extreg *r,
+                                           const upb_msglayout *l,
+                                           uint32_t num);
 
 /** Hasbit access *************************************************************/
 
@@ -252,14 +258,6 @@ UPB_INLINE uint32_t _upb_getoneofcase_field(const upb_msg *msg,
 
 UPB_INLINE bool _upb_has_submsg_nohasbit(const upb_msg *msg, size_t ofs) {
   return *UPB_PTR_AT(msg, ofs, const upb_msg*) != NULL;
-}
-
-UPB_INLINE bool _upb_isrepeated(const upb_msglayout_field *field) {
-  return (field->label & 3) == UPB_LABEL_REPEATED;
-}
-
-UPB_INLINE bool _upb_repeated_or_map(const upb_msglayout_field *field) {
-  return field->label >= UPB_LABEL_REPEATED;
 }
 
 /** upb_array *****************************************************************/

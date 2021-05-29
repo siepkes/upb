@@ -928,13 +928,21 @@ void WriteSource(const protobuf::FileDescriptor* file, Output& output,
           presence = GetSizeInit(case_offset);
         }
 
-        std::string label;
+        std::string mode;
         if (field->is_map()) {
-          label = "_UPB_LABEL_MAP";
-        } else if (field->is_packed()) {
-          label = "_UPB_LABEL_PACKED";
+          mode = "_UPB_MODE_MAP";
+        } else if (field->is_repeated()) {
+          mode = "_UPB_MODE_ARRAY";
         } else {
-          label = absl::StrCat(field->label());
+          mode = "_UPB_MODE_SCALAR";
+        }
+
+        if (field->is_packed()) {
+          absl::StrAppend(&mode, " | _UPB_MODE_IS_PACKED");
+        }
+
+        if (field->is_extension()) {
+          absl::StrAppend(&mode, " | _UPB_MODE_IS_EXTENSION");
         }
 
         output("  {$0, $1, $2, $3, $4, $5},\n",
@@ -943,7 +951,7 @@ void WriteSource(const protobuf::FileDescriptor* file, Output& output,
                presence,
                submsg_index,
                TableDescriptorType(field),
-               label);
+               mode);
       }
       output("};\n\n");
     }

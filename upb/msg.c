@@ -126,7 +126,7 @@ const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum) {
     size_t n;
     const upb_msg_ext *ext = _upb_msg_getexts(msg, &n);
     for (size_t i = 0; i < n; i++) {
-      if (ext[i].fieldnum == fieldnum) {
+      if (ext[i].field->number == fieldnum) {
         return &ext[i];
       }
     }
@@ -333,4 +333,17 @@ bool _upb_mapsorter_pushmap(_upb_mapsorter *s, upb_descriptortype_t key_type,
 
   qsort(&s->entries[sorted->start], map_size, sizeof(*s->entries), compar);
   return true;
+}
+
+/** upb_extreg ****************************************************************/
+
+bool _upb_extreg_add(upb_extreg *r, const upb_msglayout *l,
+                     const upb_msglayout_field *f) {
+  return false;
+}
+
+const upb_msglayout_field *_upb_extreg_get(const upb_extreg *r,
+                                           const upb_msglayout *l,
+                                           uint32_t num) {
+  return NULL;
 }
