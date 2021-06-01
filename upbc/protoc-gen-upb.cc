@@ -897,26 +897,20 @@ void WriteField(const protobuf::FieldDescriptor* field,
   if (field->is_packed()) {
     absl::StrAppend(&mode, " | _UPB_MODE_IS_PACKED");
   }
-  } else {
-    label = absl::StrCat(field->label());
-  }
 
   if (field->is_extension()) {
     absl::StrAppend(&mode, " | _UPB_MODE_IS_EXTENSION");
-}
+  }
 
   output("{$0, $1, $2, $3, $4, $5}", field->number(), offset, presence,
          submsg_index, TableDescriptorType(field), mode);
 }
-  std::string presence = "0";
 
 // Writes a single field into a .upb.c source file.
 void WriteMessageField(const protobuf::FieldDescriptor* field,
                        const MessageLayout& layout, int submsg_index,
                        Output& output) {
   std::string presence = "0";
-    MessageLayout::Size case_offset =
-        layout.GetOneofCaseOffset(field->real_containing_oneof());
 
   if (MessageLayout::HasHasbit(field)) {
     int index = layout.GetHasbitIndex(field);
@@ -943,7 +937,7 @@ void WriteMessageField(const protobuf::FieldDescriptor* field,
 // Writes a single message into a .upb.c source file.
 void WriteMessage(const protobuf::Descriptor* message, Output& output,
                   bool fasttable_enabled) {
-  std::string msgname = ToCIdent(message->full_name());
+  std::string msg_name = ToCIdent(message->full_name());
   std::string fields_array_ref = "NULL";
   std::string submsgs_array_ref = "NULL";
   uint8_t dense_below = 0;
