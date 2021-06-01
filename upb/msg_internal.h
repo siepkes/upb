@@ -110,23 +110,6 @@ typedef struct {
   /* Data follows. */
 } upb_msg_internaldata;
 
-/* The internal representation of an extension is self-describing: it contains
- * enough information that we can serialize it to binary format without needing
- * to look it up in a upb_extreg.
- *
- * This representation allocates 16 bytes to data on 64-bit platforms.  This is
- * rather wasteful for scalars (in the extreme case of bool, it wastes 15
- * bytes). We accept this because we expect messages to be the most common
- * extension type. */
-typedef struct {
-  const upb_msglayout_field *field;
-  union {
-    upb_strview str;
-    void *ptr;
-    char scalar_data[8];
-  } data;
-} upb_msg_ext;
-
 /* Used when a message is not extendable. */
 typedef struct {
   upb_msg_internaldata *internal;
@@ -169,32 +152,18 @@ void _upb_msg_discardunknown_shallow(upb_msg *msg);
 bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
                          upb_arena *arena);
 
-/* Adds the given extension data to the given message. |ext| is copied into the
- * message instance. This logically replaces any previously-added extension with
- * this number */
-upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, uint32_t fieldnum,
-                                     upb_arena *arena);
-
-/* Returns an array of extensions for this message. Note: the array is
- * ordered in reverse relative to the order of creation. */
-const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count);
-
-/* Returns an extension for the given field number, or NULL if no extension
- * exists for this field number. */
-const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum);
-
 /** upb_extreg ****************************************************************/
 
 typedef struct {
   upb_msglayout_field field;
-  const upb_msglayout *submsg;
-} upb_submsg_ext;
+  const upb_msglayout *extendee;
+  const upb_msglayout *submsg;   /* NULL for non-submessage fields. */
+} upb_msglayout_ext;
 
 /* Adds the given extension info for message type |l| and field number |num|
  * into the registry. Returns false if this message type and field number were
  * already in the map, or if memory allocation fails. */
-bool _upb_extreg_add(upb_extreg *r, const upb_msglayout *l,
-                     const upb_msglayout_field *f);
+bool _upb_extreg_add(upb_extreg *r, const upb_msglayout_ext *e, size_t count);
 
 /* Looks up the extension (if any) defined for message type |l| and field
  * number |num|.  If an extension was found, copies the field info into |*ext|
@@ -203,6 +172,40 @@ const upb_msglayout_field *_upb_extreg_get(const upb_extreg *r,
                                            const upb_msglayout *l,
                                            uint32_t num);
 
+/** upb_msg_ext ***************************************************************/
+
+/* The internal representation of an extension is self-describing: it contains
+ * enough information that we can serialize it to binary format without needing
+ * to look it up in a upb_extreg.
+ *
+ * This representation allocates 16 bytes to data on 64-bit platforms.  This is
+ * rather wasteful for scalars (in the extreme case of bool, it wastes 15
+ * bytes). We accept this because we expect messages to be the most common
+ * extension type. */
+typedef struct {
+  const upb_msglayout_ext *ext;
+  union {
+    upb_strview str;
+    void *ptr;
+    char scalar_data[8];
+  } data;
+} upb_msg_ext;
+
+/* Adds the given extension data to the given message. |ext| is copied into the
+ * message instance. This logically replaces any previously-added extension with
+ * this number */
+upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, const upb_msglayout_ext *ext,
+                                     upb_arena *arena);
+
+/* Returns an array of extensions for this message. Note: the array is
+ * ordered in reverse relative to the order of creation. */
+const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count);
+
+/* Returns an extension for the given field number, or NULL if no extension
+ * exists for this field number. */
+const upb_msg_ext *_upb_msg_getext(const upb_msg *msg,
+                                   const upb_msglayout_ext *ext);
+
 /** Hasbit access *************************************************************/
 
 UPB_INLINE bool _upb_hasbit(const upb_msg *msg, size_t idx) {
@@ -210,11 +213,7 @@ UPB_INLINE bool _upb_hasbit(const upb_msg *msg, size_t idx) {
 }
 
 UPB_INLINE void _upb_sethas(const upb_msg *msg, size_t idx) {
-  if (UPB_LIKELY(idx < 32)) {
-    (*UPB_PTR_AT(msg, 0, uint32_t)) |= (1UL << idx);
-  } else {
-    (*UPB_PTR_AT(msg, idx / 8, char)) |= (char)(1 << (idx % 8));
-  }
+  (*UPB_PTR_AT(msg, idx / 8, char)) |= (char)(1 << (idx % 8));
 }
 
 UPB_INLINE void _upb_clearhas(const upb_msg *msg, size_t idx) {

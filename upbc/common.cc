@@ -78,12 +78,44 @@ std::vector<const protobuf::Descriptor*> SortedMessages(
   return messages;
 }
 
+void AddExtensionsFromMessage(
+    const protobuf::Descriptor* message,
+    std::vector<const protobuf::FieldDescriptor*>* exts) {
+  for (int i = 0; i < message->nested_type_count(); i++) {
+    AddExtensionsFromMessage(message->nested_type(i), exts);
+  }
+  for (int i = 0; i < message->extension_count(); i++) {
+    exts->push_back(message->extension(i));
+  }
+}
+
+// Ordering must match upb/def.c!
+//
+// The ordering is significant because each upb_fielddef* will point at the
+// corresponding upb_msglayout_ext and we just iterate through the list without
+// any search or lookup.
+std::vector<const protobuf::FieldDescriptor*> SortedExtensions(
+    const protobuf::FileDescriptor* file) {
+  std::vector<const protobuf::FieldDescriptor*> ret;
+  for (int i = 0; i < file->message_type_count(); i++) {
+    AddExtensionsFromMessage(file->message_type(i), &ret);
+  }
+  for (int i = 0; i < file->extension_count(); i++) {
+    ret.push_back(file->extension(i));
+  }
+  return ret;
+}
+
 std::string MessageName(const protobuf::Descriptor* descriptor) {
   return ToCIdent(descriptor->full_name());
 }
 
 std::string MessageInit(const protobuf::Descriptor* descriptor) {
   return MessageName(descriptor) + "_msginit";
+}
+
+std::string ExtensionsInit(const google::protobuf::FileDescriptor* file) {
+  return ToCIdent(file->name()) + "_extinit";
 }
 
 }  // namespace upbc

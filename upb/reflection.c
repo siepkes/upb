@@ -177,17 +177,24 @@ upb_mutmsgval upb_msg_mutable(upb_msg *msg, const upb_fielddef *f,
   return ret;
 }
 
-void upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
+bool upb_msg_set(upb_msg *msg, const upb_fielddef *f, upb_msgval val,
                  upb_arena *a) {
-  const upb_msglayout_field *field = upb_fielddef_layout(f);
-  char *mem = UPB_PTR_AT(msg, field->offset, char);
-  UPB_UNUSED(a);  /* We reserve the right to make set insert into a map. */
-  memcpy(mem, &val, get_field_size(field));
-  if (field->presence > 0) {
-    _upb_sethas_field(msg, field);
-  } else if (in_oneof(field)) {
-    *_upb_oneofcase_field(msg, field) = field->number;
+  if (upb_fielddef_isextension(f)) {
+    upb_msg_ext *ext =
+        _upb_msg_getorcreateext(msg, _upb_fielddef_extlayout(f), a);
+    if (!ext) return false;
+    memcpy(&ext->data, &val, sizeof(val));
+  } else {
+    const upb_msglayout_field *field = upb_fielddef_layout(f);
+    char *mem = UPB_PTR_AT(msg, field->offset, char);
+    memcpy(mem, &val, get_field_size(field));
+    if (field->presence > 0) {
+      _upb_sethas_field(msg, field);
+    } else if (in_oneof(field)) {
+      *_upb_oneofcase_field(msg, field) = field->number;
+    }
   }
+  return true;
 }
 
 void upb_msg_clearfield(upb_msg *msg, const upb_fielddef *f) {
@@ -209,14 +216,15 @@ void upb_msg_clear(upb_msg *msg, const upb_msgdef *m) {
   _upb_msg_clear(msg, upb_msgdef_layout(m));
 }
 
-#include <stdio.h>
 bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
                   const upb_symtab *ext_pool, const upb_fielddef **out_f,
                   upb_msgval *out_val, size_t *iter) {
-  int i = *iter;
-  int n = upb_msgdef_fieldcount(m);
+  size_t i = *iter;
+  size_t n = upb_msgdef_fieldcount(m);
   const upb_msgval zero = {0};
   UPB_UNUSED(ext_pool);
+
+  /* Iterate over normal fields, returning the first one that is set. */
   while (++i < n) {
     const upb_fielddef *f = upb_msgdef_field(m, i);
     upb_msgval val = _upb_msg_getraw(msg, f);
@@ -237,9 +245,6 @@ bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
       if (upb_fielddef_ismap(f)) {
         if (upb_map_size(test.map_val) == 0) continue;
       } else if (upb_fielddef_isseq(f)) {
-        if ((uintptr_t)test.array_val < 0xff) {
-          fprintf(stderr, "field: %s, yo: %p\n", upb_fielddef_fullname(f), (void*)test.array_val);
-        }
         if (upb_array_size(test.array_val) == 0) continue;
       }
     }
@@ -249,6 +254,20 @@ bool upb_msg_next(const upb_msg *msg, const upb_msgdef *m,
     *iter = i;
     return true;
   }
+
+  if (ext_pool) {
+    /* Return any extensions that are set. */
+    size_t count;
+    const upb_msg_ext *ext = _upb_msg_getexts(msg, &count);
+    if (i - n < count) {
+      ext += i - n;
+      memcpy(out_val, &ext->data, sizeof(*out_val));
+      *out_f = _upb_symtab_lookupextfield(ext_pool, ext->ext);
+      *iter = i;
+      return true;
+    }
+  }
+
   *iter = i;
   return false;
 }

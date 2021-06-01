@@ -146,6 +146,13 @@ void WriteDefSource(const protobuf::FileDescriptor* file, Output& output) {
   }
   output("};\n\n");
 
+  int ext_count = SortedExtensions(file).size();
+
+  if (ext_count) {
+    output("extern const upb_msglayout_ext $0[$1];\n\n", ExtensionsInit(file),
+           ext_count);
+  }
+
   output("static upb_def_init *deps[$0] = {\n", file->dependency_count() + 1);
   for (int i = 0; i < file->dependency_count(); i++) {
     output("  &$0,\n", DefInitSymbol(file->dependency(i)));
@@ -160,6 +167,11 @@ void WriteDefSource(const protobuf::FileDescriptor* file, Output& output) {
     output("  NULL,\n");
   } else {
     output("  layouts,\n");
+  }
+  if (ext_count) {
+    output("  $0,\n", ExtensionsInit(file));
+  } else {
+    output("  NULL,\n");
   }
   output("  \"$0\",\n", file->name());
   output("  UPB_STRVIEW_INIT(descriptor, $0)\n", file_data.size());

@@ -135,6 +135,7 @@ bool upb_fielddef_haspresence(const upb_fielddef *f);
 const upb_msgdef *upb_fielddef_msgsubdef(const upb_fielddef *f);
 const upb_enumdef *upb_fielddef_enumsubdef(const upb_fielddef *f);
 const upb_msglayout_field *upb_fielddef_layout(const upb_fielddef *f);
+const upb_msglayout_ext *_upb_fielddef_extlayout(const upb_fielddef *f);
 
 /* upb_oneofdef ***************************************************************/
 
@@ -308,6 +309,8 @@ const upb_msgdef *upb_symtab_lookupmsg(const upb_symtab *s, const char *sym);
 const upb_msgdef *upb_symtab_lookupmsg2(
     const upb_symtab *s, const char *sym, size_t len);
 const upb_enumdef *upb_symtab_lookupenum(const upb_symtab *s, const char *sym);
+const upb_fielddef *upb_symtab_lookupext(const upb_symtab *s, const char *sym,
+                                         size_t len);
 const upb_filedef *upb_symtab_lookupfile(const upb_symtab *s, const char *name);
 const upb_filedef *upb_symtab_lookupfile2(
     const upb_symtab *s, const char *name, size_t len);
@@ -317,11 +320,15 @@ const upb_filedef *upb_symtab_addfile(
     upb_status *status);
 size_t _upb_symtab_bytesloaded(const upb_symtab *s);
 upb_arena *_upb_symtab_arena(const upb_symtab *s);
+const upb_fielddef *_upb_symtab_lookupextfield(const upb_symtab *s,
+                                               const upb_msglayout_ext *ext);
+const upb_extreg *upb_symtab_extreg(const upb_symtab *s);
 
 /* For generated code only: loads a generated descriptor. */
 typedef struct upb_def_init {
   struct upb_def_init **deps;     /* Dependencies of this file. */
   const upb_msglayout **layouts;  /* Pre-order layouts of all messages. */
+  const upb_msglayout_ext *ext_layouts;  /* Pre-order layouts of all exts. */
   const char *filename;
   upb_strview descriptor;         /* Serialized descriptor. */
 } upb_def_init;

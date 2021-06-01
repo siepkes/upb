@@ -2011,6 +2011,10 @@ UPB_INLINE void google_protobuf_GeneratedCodeInfo_Annotation_set_end(google_prot
   *UPB_PTR_AT(msg, UPB_SIZE(8, 8), int32_t) = value;
 }
 
+/* Max size 32 is google.protobuf.FileOptions */
+/* Max size 64 is google.protobuf.FileOptions */
+#define _UPB_MAXOPT_SIZE UPB_SIZE(104, 192)
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

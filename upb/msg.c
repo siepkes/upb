@@ -85,7 +85,7 @@ bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
                          upb_arena *arena) {
   realloc_internal(msg, len, arena);
   upb_msg_internal *in = upb_msg_getinternal(msg);
-  memcpy(UPB_PTR_AT(in->internal, in->internal->unknown_end, char), data, len);
+  memmove(UPB_PTR_AT(in->internal, in->internal->unknown_end, char), data, len);
   in->internal->unknown_end += len;
   return true;
 }
@@ -120,29 +120,33 @@ const upb_msg_ext *_upb_msg_getexts(const upb_msg *msg, size_t *count) {
   }
 }
 
-const upb_msg_ext *_upb_msg_getext(const upb_msg *msg, uint32_t fieldnum) {
-  const upb_msg_internal *in = upb_msg_getinternal_const(msg);
-  if (in->internal) {
-    size_t n;
-    const upb_msg_ext *ext = _upb_msg_getexts(msg, &n);
-    for (size_t i = 0; i < n; i++) {
-      if (ext[i].field->number == fieldnum) {
-        return &ext[i];
-      }
+const upb_msg_ext *_upb_msg_getext(const upb_msg *msg,
+                                   const upb_msglayout_ext *e) {
+  size_t n;
+  const upb_msg_ext *ext = _upb_msg_getexts(msg, &n);
+
+  /* For now we use linear search exclusively to find extensions. If this
+   * becomes an issue due to messages with lots of extensions, we can introduce
+   * a table of some sort. */
+  for (size_t i = 0; i < n; i++) {
+    if (ext[i].ext == e) {
+      return &ext[i];
     }
   }
+
   return NULL;
 }
 
-upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, uint32_t fieldnum,
+upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, const upb_msglayout_ext *e,
                                      upb_arena *arena) {
-  upb_msg_ext *ext = (upb_msg_ext*)_upb_msg_getext(msg, fieldnum);
+  upb_msg_ext *ext = (upb_msg_ext*)_upb_msg_getext(msg, e);
   if (ext) return ext;
   realloc_internal(msg, sizeof(upb_msg_ext), arena);
   upb_msg_internal *in = upb_msg_getinternal(msg);
   in->internal->ext_begin -= sizeof(upb_msg_ext);
   ext = UPB_PTR_AT(in->internal, in->internal->ext_begin, void);
   memset(ext, 0, sizeof(upb_msg_ext));
+  ext->ext = e;
   return ext;
 }
 
@@ -337,13 +341,53 @@ bool _upb_mapsorter_pushmap(_upb_mapsorter *s, upb_descriptortype_t key_type,
 
 /** upb_extreg ****************************************************************/
 
-bool _upb_extreg_add(upb_extreg *r, const upb_msglayout *l,
-                     const upb_msglayout_field *f) {
-  return false;
+struct upb_extreg {
+  upb_arena *arena;
+  upb_strtable exts;  /* Key is upb_msglayout* concatenated with fieldnum. */
+};
+
+#define EXTREG_KEY_SIZE (sizeof(upb_msglayout*) + sizeof(uint32_t))
+
+static void extreg_key(char *buf, const upb_msglayout *l, uint32_t fieldnum) {
+  memcpy(buf, &l, sizeof(l));
+  memcpy(buf + sizeof(l), &fieldnum, sizeof(fieldnum));
+}
+
+upb_extreg *upb_extreg_new(upb_arena *arena) {
+  upb_extreg *r = upb_arena_malloc(arena, sizeof(*r));
+  if (!r) return NULL;
+  r->arena = arena;
+  if (!upb_strtable_init(&r->exts, 8, arena)) return NULL;
+  return r;
+}
+
+bool _upb_extreg_add(upb_extreg *r, const upb_msglayout_ext *e, size_t count) {
+  char buf[EXTREG_KEY_SIZE];
+  const upb_msglayout_ext *start = e;
+  for (const upb_msglayout_ext *end = e + count; e < end; e++) {
+    extreg_key(buf, e->extendee, e->field.number);
+    if (!upb_strtable_insert(&r->exts, buf, EXTREG_KEY_SIZE,
+                             upb_value_constptr(e), r->arena)) {
+      /* Back out the entries previously added. */
+      for (end = e, e = start; e < end; e++) {
+        extreg_key(buf, e->extendee, e->field.number);
+        upb_strtable_remove(&r->exts, buf, EXTREG_KEY_SIZE, NULL);
+      }
+      return false;
+    }
+  }
+  return true;
 }
 
 const upb_msglayout_field *_upb_extreg_get(const upb_extreg *r,
                                            const upb_msglayout *l,
                                            uint32_t num) {
-  return NULL;
+  char buf[EXTREG_KEY_SIZE];
+  upb_value v;
+  extreg_key(buf, l, num);
+  if (upb_strtable_lookup2(&r->exts, buf, EXTREG_KEY_SIZE, &v)) {
+    return upb_value_getconstptr(v);
+  } else {
+    return NULL;
+  }
 }

@@ -237,6 +237,7 @@ cc_library(
 py_binary(
     name = "amalgamate",
     srcs = ["tools/amalgamate.py"],
+    python_version = "PY3",
 )
 
 upb_amalgamation(

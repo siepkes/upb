@@ -45,7 +45,7 @@
 typedef struct {
   const char *ptr, *end;
   upb_arena *arena;  /* TODO: should we have a tmp arena for tmp data? */
-  const upb_symtab *any_pool;
+  const upb_symtab *symtab;
   int depth;
   upb_status *status;
   jmp_buf err;
@@ -97,6 +97,13 @@ UPB_NORETURN static void jsondec_errf(jsondec *d, const char *fmt, ...) {
   upb_status_vappenderrf(d->status, fmt, argp);
   va_end(argp);
   UPB_LONGJMP(d->err, 1);
+}
+
+static void jsondec_msgset(jsondec *d, upb_msg *msg, const upb_fielddef *f,
+                           upb_msgval val) {
+  if (!upb_msg_set(msg, f, val, d->arena)) {
+    jsondec_err(d, "Out of memory");
+  }
 }
 
 static void jsondec_skipws(jsondec *d) {
@@ -921,6 +928,7 @@ static upb_msgval jsondec_msg(jsondec *d, const upb_fielddef *f) {
   return val;
 }
 
+#include <stdio.h>
 static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
   upb_strview name;
   const upb_fielddef *f;
@@ -928,7 +936,21 @@ static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
 
   name = jsondec_string(d);
   jsondec_entrysep(d);
-  f = upb_msgdef_lookupjsonname(m, name.data, name.size);
+
+  if (name.size >= 2 && name.data[0] == '[' &&
+      name.data[name.size - 1] == ']') {
+    fprintf(stderr, "BONKERS! %.*s\n", (int)name.size - 2, name.data + 1);
+    f = upb_symtab_lookupext(d->symtab, name.data + 1, name.size - 2);
+    if (f && upb_fielddef_containingtype(f) != m) {
+      jsondec_errf(
+          d, "Extension %s extends message %s, but was seen in message %s",
+          upb_fielddef_fullname(f),
+          upb_msgdef_fullname(upb_fielddef_containingtype(f)),
+          upb_msgdef_fullname(m));
+    }
+  } else {
+    f = upb_msgdef_lookupjsonname(m, name.data, name.size);
+  }
 
   if (!f) {
     if ((d->options & UPB_JSONDEC_IGNOREUNKNOWN) == 0) {
@@ -963,7 +985,7 @@ static void jsondec_field(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
     jsondec_tomsg(d, submsg, subm);
   } else {
     upb_msgval val = jsondec_value(d, f);
-    upb_msg_set(msg, f, val, d->arena);
+    jsondec_msgset(d, msg, f, val);
   }
 
   d->debug_field = preserved;
@@ -1114,8 +1136,8 @@ static void jsondec_timestamp(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
     jsondec_err(d, "Timestamp out of range");
   }
 
-  upb_msg_set(msg, upb_msgdef_itof(m, 1), seconds, d->arena);
-  upb_msg_set(msg, upb_msgdef_itof(m, 2), nanos, d->arena);
+  jsondec_msgset(d, msg, upb_msgdef_itof(m, 1), seconds);
+  jsondec_msgset(d, msg, upb_msgdef_itof(m, 2), nanos);
   return;
 
 malformed:
@@ -1146,8 +1168,8 @@ static void jsondec_duration(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
     nanos.int32_val = - nanos.int32_val;
   }
 
-  upb_msg_set(msg, upb_msgdef_itof(m, 1), seconds, d->arena);
-  upb_msg_set(msg, upb_msgdef_itof(m, 2), nanos, d->arena);
+  jsondec_msgset(d, msg, upb_msgdef_itof(m, 1), seconds);
+  jsondec_msgset(d, msg, upb_msgdef_itof(m, 2), nanos);
 }
 
 static void jsondec_listvalue(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
@@ -1238,7 +1260,7 @@ static void jsondec_wellknownvalue(jsondec *d, upb_msg *msg,
       UPB_UNREACHABLE();
   }
 
-  upb_msg_set(msg, f, val, d->arena);
+  jsondec_msgset(d, msg, f, val);
 }
 
 static upb_strview jsondec_mask(jsondec *d, const char *buf, const char *end) {
@@ -1322,7 +1344,7 @@ static const upb_msgdef *jsondec_typeurl(jsondec *d, upb_msg *msg,
   upb_msgval val;
 
   val.str_val = type_url;
-  upb_msg_set(msg, type_url_f, val, d->arena);
+  jsondec_msgset(d, msg, type_url_f, val);
 
   /* Find message name after the last '/' */
   while (ptr > type_url.data && *--ptr != '/') {}
@@ -1332,7 +1354,7 @@ static const upb_msgdef *jsondec_typeurl(jsondec *d, upb_msg *msg,
   }
 
   ptr++;
-  type_m = upb_symtab_lookupmsg2(d->any_pool, ptr, end - ptr);
+  type_m = upb_symtab_lookupmsg2(d->symtab, ptr, end - ptr);
 
   if (!type_m) {
     jsondec_err(d, "Type was not found");
@@ -1401,13 +1423,13 @@ static void jsondec_any(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
 
   encoded.str_val.data = upb_encode(any_msg, upb_msgdef_layout(any_m), d->arena,
                                     &encoded.str_val.size);
-  upb_msg_set(msg, value_f, encoded, d->arena);
+  jsondec_msgset(d, msg, value_f, encoded);
 }
 
 static void jsondec_wrapper(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
   const upb_fielddef *value_f = upb_msgdef_itof(m, 1);
   upb_msgval val = jsondec_value(d, value_f);
-  upb_msg_set(msg, value_f, val, d->arena);
+  jsondec_msgset(d, msg, value_f, val);
 }
 
 static void jsondec_wellknown(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
@@ -1450,7 +1472,7 @@ static void jsondec_wellknown(jsondec *d, upb_msg *msg, const upb_msgdef *m) {
 }
 
 bool upb_json_decode(const char *buf, size_t size, upb_msg *msg,
-                     const upb_msgdef *m, const upb_symtab *any_pool,
+                     const upb_msgdef *m, const upb_symtab *symtab,
                      int options, upb_arena *arena, upb_status *status) {
   jsondec d;
 
@@ -1459,7 +1481,7 @@ bool upb_json_decode(const char *buf, size_t size, upb_msg *msg,
   d.ptr = buf;
   d.end = buf + size;
   d.arena = arena;
-  d.any_pool = any_pool;
+  d.symtab = symtab;
   d.status = status;
   d.options = options;
   d.depth = 64;

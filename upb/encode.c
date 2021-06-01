@@ -187,7 +187,8 @@ static void encode_message(upb_encstate *e, const char *msg,
                            const upb_msglayout *m, size_t *size);
 
 static void encode_scalar(upb_encstate *e, const void *_field_mem,
-                          const upb_msglayout *m, const upb_msglayout_field *f,
+                          upb_msglayout const *const *submsgs,
+                          const upb_msglayout_field *f,
                           bool skip_zero_value) {
   const char *field_mem = _field_mem;
   int wire_type;
@@ -242,7 +243,7 @@ static void encode_scalar(upb_encstate *e, const void *_field_mem,
     case UPB_DESCRIPTOR_TYPE_GROUP: {
       size_t size;
       void *submsg = *(void **)field_mem;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      const upb_msglayout *subm = submsgs[f->submsg_index];
       if (submsg == NULL) {
         return;
       }
@@ -256,7 +257,7 @@ static void encode_scalar(upb_encstate *e, const void *_field_mem,
     case UPB_DESCRIPTOR_TYPE_MESSAGE: {
       size_t size;
       void *submsg = *(void **)field_mem;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      const upb_msglayout *subm = submsgs[f->submsg_index];
       if (submsg == NULL) {
         return;
       }
@@ -275,9 +276,10 @@ static void encode_scalar(upb_encstate *e, const void *_field_mem,
   encode_tag(e, f->number, wire_type);
 }
 
-static void encode_array(upb_encstate *e, const char *field_mem,
-                         const upb_msglayout *m, const upb_msglayout_field *f) {
-  const upb_array *arr = *(const upb_array**)field_mem;
+static void encode_array(upb_encstate *e, const upb_msg *msg,
+                         upb_msglayout const *const *submsgs,
+                         const upb_msglayout_field *f) {
+  const upb_array *arr = *UPB_PTR_AT(msg, f->offset, upb_array*);
   bool packed = f->mode & _UPB_MODE_IS_PACKED;
   size_t pre_len = e->limit - e->ptr;
 
@@ -344,7 +346,7 @@ static void encode_array(upb_encstate *e, const char *field_mem,
     case UPB_DESCRIPTOR_TYPE_GROUP: {
       const void *const*start = _upb_array_constptr(arr);
       const void *const*ptr = start + arr->len;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      const upb_msglayout *subm = submsgs[f->submsg_index];
       if (--e->depth == 0) encode_err(e);
       do {
         size_t size;
@@ -359,7 +361,7 @@ static void encode_array(upb_encstate *e, const char *field_mem,
     case UPB_DESCRIPTOR_TYPE_MESSAGE: {
       const void *const*start = _upb_array_constptr(arr);
       const void *const*ptr = start + arr->len;
-      const upb_msglayout *subm = m->submsgs[f->submsg_index];
+      const upb_msglayout *subm = submsgs[f->submsg_index];
       if (--e->depth == 0) encode_err(e);
       do {
         size_t size;
@@ -387,17 +389,18 @@ static void encode_mapentry(upb_encstate *e, uint32_t number,
   const upb_msglayout_field *val_field = &layout->fields[1];
   size_t pre_len = e->limit - e->ptr;
   size_t size;
-  encode_scalar(e, &ent->v, layout, val_field, false);
-  encode_scalar(e, &ent->k, layout, key_field, false);
+  encode_scalar(e, &ent->v, layout->submsgs, val_field, false);
+  encode_scalar(e, &ent->k, layout->submsgs, key_field, false);
   size = (e->limit - e->ptr) - pre_len;
   encode_varint(e, size);
   encode_tag(e, number, UPB_WIRE_TYPE_DELIMITED);
 }
 
-static void encode_map(upb_encstate *e, const char *field_mem,
-                       const upb_msglayout *m, const upb_msglayout_field *f) {
-  const upb_map *map = *(const upb_map**)field_mem;
-  const upb_msglayout *layout = m->submsgs[f->submsg_index];
+static void encode_map(upb_encstate *e, const upb_msg *msg,
+                       upb_msglayout const *const *submsgs,
+                       const upb_msglayout_field *f) {
+  const upb_map *map = *UPB_PTR_AT(msg, f->offset, const upb_map*);
+  const upb_msglayout *layout = submsgs[f->submsg_index];
   UPB_ASSERT(layout->field_count == 2);
 
   if (map == NULL) return;
@@ -425,8 +428,8 @@ static void encode_map(upb_encstate *e, const char *field_mem,
   }
 }
 
-static void encode_scalarfield(upb_encstate *e, const char *msg,
-                               const upb_msglayout *m,
+static void encode_scalarfield(upb_encstate *e, const upb_msg *msg,
+                               upb_msglayout const *const *submsgs,
                                const upb_msglayout_field *f) {
   bool skip_empty = false;
   if (f->presence == 0) {
@@ -439,7 +442,25 @@ static void encode_scalarfield(upb_encstate *e, const char *msg,
     /* Field is in a oneof. */
     if (_upb_getoneofcase_field(msg, f) != f->number) return;
   }
-  encode_scalar(e, msg + f->offset, m, f, skip_empty);
+  encode_scalar(e, UPB_PTR_AT(msg, f->offset, void), submsgs, f, skip_empty);
+}
+
+static void encode_field(upb_encstate *e, const upb_msg *msg,
+                         upb_msglayout const *const *submsgs,
+                         const upb_msglayout_field *field) {
+  switch (_upb_getmode(field)) {
+    case _UPB_MODE_ARRAY:
+      encode_array(e, msg, submsgs, field);
+      break;
+    case _UPB_MODE_MAP:
+      encode_map(e, msg, submsgs, field);
+      break;
+    case _UPB_MODE_SCALAR:
+      encode_scalarfield(e, msg, submsgs, field);
+      break;
+    default:
+      UPB_UNREACHABLE();
+  }
 }
 
 static void encode_message(upb_encstate *e, const char *msg,
@@ -457,21 +478,23 @@ static void encode_message(upb_encstate *e, const char *msg,
     }
   }
 
+  if (m->extendable) {
+    /* Encode all extensions together. Unlike C++, we do not attempt to keep
+     * these in field number order relative to normal fields or even to each
+     * other. */
+    size_t ext_count;
+    const upb_msg_ext *ext = _upb_msg_getexts(msg, &ext_count);
+    const upb_msg_ext *end = ext + ext_count;
+    if (ext_count) {
+      for (; ext != end; ext++) {
+        encode_field(e, &ext->data, &ext->ext->submsg, &ext->ext->field);
+      }
+    }
+  }
+
   while (f != first) {
     f--;
-    switch (_upb_getmode(f)) {
-      case _UPB_MODE_ARRAY:
-        encode_array(e, msg + f->offset, m, f);
-        break;
-      case _UPB_MODE_MAP:
-        encode_map(e, msg + f->offset, m, f);
-        break;
-      case _UPB_MODE_SCALAR:
-        encode_scalarfield(e, msg, m, f);
-        break;
-      default:
-        UPB_UNREACHABLE();
-    }
+    encode_field(e, msg, m->submsgs, f);
   }
 
   *size = (e->limit - e->ptr) - pre_len;

@@ -84,8 +84,11 @@ void EmitFileWarning(const google::protobuf::FileDescriptor* file,
                      Output& output);
 std::vector<const google::protobuf::Descriptor*> SortedMessages(
     const google::protobuf::FileDescriptor* file);
+std::vector<const google::protobuf::FieldDescriptor*> SortedExtensions(
+    const google::protobuf::FileDescriptor* file);
 std::string MessageInit(const google::protobuf::Descriptor* descriptor);
 std::string MessageName(const google::protobuf::Descriptor* descriptor);
+std::string ExtensionsInit(const google::protobuf::FileDescriptor* file);
 
 }  // namespace upbc
 

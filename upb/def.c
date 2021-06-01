@@ -44,7 +44,14 @@ typedef struct {
   char str[1];  /* Null-terminated string data follows. */
 } str_t;
 
+/* The upb core does not generally have a concept of default instances. However
+ * for descriptor options we make an exception since the max size is known and
+ * modest (<200 bytes). All types can share a default instance since it is
+ * initialized to zeroes. */
+static const char opt_default[_UPB_MAXOPT_SIZE] = {0};
+
 struct upb_fielddef {
+  const google_protobuf_FieldOptions *opts;
   const upb_filedef *file;
   const upb_msgdef *msgdef;
   const char *full_name;
@@ -65,7 +72,7 @@ struct upb_fielddef {
   } sub;
   uint32_t number_;
   uint16_t index_;
-  uint16_t layout_index;
+  uint16_t layout_index;  /* Index into msgdef->layout->fields or file->exts */
   bool is_extension_;
   bool lazy_;
   bool packed_;
@@ -75,6 +82,7 @@ struct upb_fielddef {
 };
 
 struct upb_msgdef {
+  const google_protobuf_MessageOptions *opts;
   const upb_msglayout *layout;
   const upb_filedef *file;
   const char *full_name;
@@ -97,6 +105,7 @@ struct upb_msgdef {
 };
 
 struct upb_enumdef {
+  const google_protobuf_EnumOptions *opts;
   const upb_filedef *file;
   const char *full_name;
   upb_strtable ntoi;
@@ -105,6 +114,7 @@ struct upb_enumdef {
 };
 
 struct upb_oneofdef {
+  const google_protobuf_OneofOptions *opts;
   const upb_msgdef *parent;
   const char *full_name;
   int field_count;
@@ -115,15 +125,15 @@ struct upb_oneofdef {
 };
 
 struct upb_filedef {
+  const google_protobuf_FileOptions *opts;
   const char *name;
   const char *package;
-  const char *phpprefix;
-  const char *phpnamespace;
 
   const upb_filedef **deps;
   const upb_msgdef *msgs;
   const upb_enumdef *enums;
   const upb_fielddef *exts;
+  const upb_msglayout_ext *ext_layouts;
   const upb_symtab *symtab;
 
   int dep_count;
@@ -137,18 +147,20 @@ struct upb_symtab {
   upb_arena *arena;
   upb_strtable syms;  /* full_name -> packed def ptr */
   upb_strtable files;  /* file_name -> upb_filedef* */
+  upb_inttable exts;   /* upb_msglayout_ext* -> upb_fielddef* */
+  upb_extreg *extreg;
   size_t bytes_loaded;
 };
 
 /* Inside a symtab we store tagged pointers to specific def types. */
 typedef enum {
-  UPB_DEFTYPE_FIELD = 0,
-
   /* Only inside symtab table. */
+  UPB_DEFTYPE_EXT = 0,
   UPB_DEFTYPE_MSG = 1,
   UPB_DEFTYPE_ENUM = 2,
 
   /* Only inside message table. */
+  UPB_DEFTYPE_FIELD = 0,
   UPB_DEFTYPE_ONEOF = 1,
   UPB_DEFTYPE_FIELD_JSONNAME = 2
 } upb_deftype_t;
@@ -484,7 +496,13 @@ const upb_enumdef *upb_fielddef_enumsubdef(const upb_fielddef *f) {
 }
 
 const upb_msglayout_field *upb_fielddef_layout(const upb_fielddef *f) {
+  UPB_ASSERT(!upb_fielddef_isextension(f));
   return &f->msgdef->layout->fields[f->layout_index];
+}
+
+const upb_msglayout_ext *_upb_fielddef_extlayout(const upb_fielddef *f) {
+  UPB_ASSERT(upb_fielddef_isextension(f));
+  return &f->file->ext_layouts[f->layout_index];
 }
 
 bool upb_fielddef_issubmsg(const upb_fielddef *f) {
@@ -850,7 +868,9 @@ upb_symtab *upb_symtab_new(void) {
   s->bytes_loaded = 0;
 
   if (!upb_strtable_init(&s->syms, 32, s->arena) ||
-      !upb_strtable_init(&s->files, 4, s->arena)) {
+      !upb_strtable_init(&s->files, 4, s->arena) ||
+      !upb_inttable_init(&s->exts, s->arena) ||
+      (s->extreg = upb_extreg_new(s->arena)) == NULL) {
     upb_arena_free(s->arena);
     upb_gfree(s);
     s = NULL;
@@ -858,23 +878,35 @@ upb_symtab *upb_symtab_new(void) {
   return s;
 }
 
-const upb_msgdef *upb_symtab_lookupmsg(const upb_symtab *s, const char *sym) {
+static const void *symtab_lookup(const upb_symtab *s, const char *sym,
+                                 upb_deftype_t type) {
   upb_value v;
-  return upb_strtable_lookup(&s->syms, sym, &v) ?
-      unpack_def(v, UPB_DEFTYPE_MSG) : NULL;
+  return upb_strtable_lookup(&s->syms, sym, &v) ? unpack_def(v, type) : NULL;
+}
+
+static const void *symtab_lookup2(const upb_symtab *s, const char *sym,
+                                  size_t size, upb_deftype_t type) {
+  upb_value v;
+  return upb_strtable_lookup2(&s->syms, sym, size, &v) ? unpack_def(v, type)
+                                                       : NULL;
+}
+
+const upb_msgdef *upb_symtab_lookupmsg(const upb_symtab *s, const char *sym) {
+  return symtab_lookup(s, sym, UPB_DEFTYPE_MSG);
 }
 
 const upb_msgdef *upb_symtab_lookupmsg2(const upb_symtab *s, const char *sym,
                                         size_t len) {
-  upb_value v;
-  return upb_strtable_lookup2(&s->syms, sym, len, &v) ?
-      unpack_def(v, UPB_DEFTYPE_MSG) : NULL;
+  return symtab_lookup2(s, sym, len, UPB_DEFTYPE_MSG);
 }
 
 const upb_enumdef *upb_symtab_lookupenum(const upb_symtab *s, const char *sym) {
-  upb_value v;
-  return upb_strtable_lookup(&s->syms, sym, &v) ?
-      unpack_def(v, UPB_DEFTYPE_ENUM) : NULL;
+  return symtab_lookup(s, sym, UPB_DEFTYPE_ENUM);
+}
+
+const upb_fielddef *upb_symtab_lookupext(const upb_symtab *s, const char *sym,
+                                         size_t size) {
+  return symtab_lookup2(s, sym, size, UPB_DEFTYPE_EXT);
 }
 
 const upb_filedef *upb_symtab_lookupfile(const upb_symtab *s, const char *name) {
@@ -908,7 +940,9 @@ typedef struct {
   upb_filedef *file;              /* File we are building. */
   upb_arena *arena;               /* Allocate defs here. */
   const upb_msglayout **layouts;  /* NULL if we should build layouts. */
+  upb_msglayout_ext *ext_layouts;  /* NULL if we are *not* building layouts. */
   upb_status *status;             /* Record errors here. */
+  int ext_index;                  /* For f->layout_index on extensions. */
   jmp_buf err;                    /* longjmp() on error. */
 } symtab_addctx;
 
@@ -1027,11 +1061,39 @@ static void assign_layout_indices(const upb_msgdef *m, upb_msglayout *l,
     upb_fielddef *f = (upb_fielddef*)upb_msgdef_itof(m, fields[i].number);
     UPB_ASSERT(f);
     f->layout_index = i;
-    if (upb_fielddef_number(f) == i + 1) {
+    if (i <= 254 && upb_fielddef_number(f) == i + 1) {
       dense_below = upb_fielddef_number(f);
     }
   }
   l->dense_below = dense_below;
+}
+
+static void fill_fieldlayout(upb_msglayout_field *field, const upb_fielddef *f) {
+  field->number = upb_fielddef_number(f);
+  field->descriptortype = upb_fielddef_descriptortype(f);
+
+  if (field->descriptortype == UPB_DTYPE_STRING &&
+      f->file->syntax == UPB_SYNTAX_PROTO2) {
+    /* See TableDescriptorType() in upbc/generator.cc for details and
+     * rationale. */
+    field->descriptortype = UPB_DTYPE_BYTES;
+  }
+
+  if (upb_fielddef_ismap(f)) {
+    field->mode = _UPB_MODE_MAP;
+  } else if (upb_fielddef_isseq(f)) {
+    field->mode = _UPB_MODE_ARRAY;
+  } else {
+    field->mode = _UPB_MODE_SCALAR;
+  }
+
+  if (upb_fielddef_packed(f)) {
+    field->mode |= _UPB_MODE_IS_PACKED;
+  }
+
+  if (upb_fielddef_isextension(f)) {
+    field->mode |= _UPB_MODE_IS_EXTENSION;
+  }
 }
 
 /* This function is the dynamic equivalent of message_layout.{cc,h} in upbc.
@@ -1112,31 +1174,7 @@ static void make_layout(symtab_addctx *ctx, const upb_msgdef *m) {
     upb_fielddef* f = upb_msg_iter_field(&it);
     upb_msglayout_field *field = &fields[upb_fielddef_index(f)];
 
-    field->number = upb_fielddef_number(f);
-    field->descriptortype = upb_fielddef_descriptortype(f);
-
-    if (field->descriptortype == UPB_DTYPE_STRING &&
-        f->file->syntax == UPB_SYNTAX_PROTO2) {
-      /* See TableDescriptorType() in upbc/generator.cc for details and
-       * rationale. */
-      field->descriptortype = UPB_DTYPE_BYTES;
-    }
-
-    if (upb_fielddef_ismap(f)) {
-      field->mode = _UPB_MODE_MAP;
-    } else if (upb_fielddef_isseq(f)) {
-      field->mode = _UPB_MODE_ARRAY;
-    } else {
-      field->mode = _UPB_MODE_SCALAR;
-    }
-
-    if (upb_fielddef_packed(f)) {
-      field->mode |= _UPB_MODE_IS_PACKED;
-    }
-
-    if (upb_fielddef_isextension(f)) {
-      field->mode |= _UPB_MODE_IS_EXTENSION;
-    }
+    fill_fieldlayout(field, f);
 
     if (upb_fielddef_issubmsg(f)) {
       const upb_msgdef *subm = upb_fielddef_msgsubdef(f);
@@ -1380,7 +1418,6 @@ static void create_oneofdef(
   o->synthetic = false;
 
   v = pack_def(o, UPB_DEFTYPE_ONEOF);
-  symtab_add(ctx, o->full_name, v);
   CHK_OOM(upb_strtable_insert(&m->ntof, name.data, name.size, v, ctx->arena));
 
   CHK_OOM(upb_inttable_init(&o->itof, ctx->arena));
@@ -1535,6 +1572,7 @@ static void set_default_default(symtab_addctx *ctx, upb_fielddef *f) {
   }
 }
 
+#include <stdio.h>
 static void create_fielddef(
     symtab_addctx *ctx, const char *prefix, upb_msgdef *m,
     const google_protobuf_FieldDescriptorProto *field_proto) {
@@ -1621,7 +1659,8 @@ static void create_fielddef(
     /* extension field. */
     f = (upb_fielddef*)&ctx->file->exts[ctx->file->ext_count++];
     f->is_extension_ = true;
-    symtab_add(ctx, full_name, pack_def(f, UPB_DEFTYPE_FIELD));
+    symtab_add(ctx, full_name, pack_def(f, UPB_DEFTYPE_EXT));
+    f->layout_index = ctx->ext_index++;
   }
 
   f->full_name = full_name;
@@ -1812,7 +1851,7 @@ static void create_msgdef(symtab_addctx *ctx, const char *prefix,
   assign_msg_wellknowntype(m);
   upb_inttable_compact(&m->itof, ctx->arena);
 
-  /* This message is built.  Now build nested messages and enums. */
+  /* This message is built.  Now build nested entities. */
 
   enums = google_protobuf_DescriptorProto_enum_type(msg_proto, &n);
   for (i = 0; i < n; i++) {
@@ -1822,6 +1861,11 @@ static void create_msgdef(symtab_addctx *ctx, const char *prefix,
   msgs = google_protobuf_DescriptorProto_nested_type(msg_proto, &n);
   for (i = 0; i < n; i++) {
     create_msgdef(ctx, m->full_name, msgs[i]);
+  }
+
+  fields = google_protobuf_DescriptorProto_extension(msg_proto, &n);
+  for (i = 0; i < n; i++) {
+    create_fielddef(ctx, m->full_name, NULL, fields[i]);
   }
 }
 
@@ -1867,16 +1911,6 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
   upb_strview name;
   const google_protobuf_FieldDescriptorProto *field_proto = f->sub.unresolved;
 
-  if (f->is_extension_) {
-    if (!google_protobuf_FieldDescriptorProto_has_extendee(field_proto)) {
-      symtab_errf(ctx, "extension for field '%s' had no extendee",
-                  f->full_name);
-    }
-
-    name = google_protobuf_FieldDescriptorProto_extendee(field_proto);
-    f->msgdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_MSG);
-  }
-
   if ((upb_fielddef_issubmsg(f) || f->type_ == UPB_DESCRIPTOR_TYPE_ENUM) &&
       !google_protobuf_FieldDescriptorProto_has_type_name(field_proto)) {
     symtab_errf(ctx, "field '%s' is missing type name", f->full_name);
@@ -1888,6 +1922,33 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
     f->sub.msgdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_MSG);
   } else if (f->type_ == UPB_DESCRIPTOR_TYPE_ENUM) {
     f->sub.enumdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_ENUM);
+  }
+
+  if (f->is_extension_) {
+    if (!google_protobuf_FieldDescriptorProto_has_extendee(field_proto)) {
+      symtab_errf(ctx, "extension for field '%s' had no extendee",
+                  f->full_name);
+    }
+
+    name = google_protobuf_FieldDescriptorProto_extendee(field_proto);
+    f->msgdef = symtab_resolve(ctx, f, prefix, name, UPB_DEFTYPE_MSG);
+
+    if (ctx->ext_layouts) {
+      upb_msglayout_ext *ext = &ctx->ext_layouts[f->layout_index];
+      fill_fieldlayout(&ext->field, f);
+      ext->field.presence = 0;
+      ext->field.offset = 0;
+      ext->field.submsg_index = 0;
+      ext->extendee = f->msgdef->layout;
+      ext->submsg = f->sub.msgdef->layout;
+    } else {
+      UPB_ASSERT(upb_fielddef_number(f) ==
+                 _upb_fielddef_extlayout(f)->field.number);
+    }
+
+    CHK_OOM(upb_inttable_insert(&ctx->symtab->exts,
+                                (uintptr_t)_upb_fielddef_extlayout(f),
+                                upb_value_constptr(f), ctx->arena));
   }
 
   /* Have to delay resolving of the default value until now because of the enum
@@ -1912,10 +1973,11 @@ static void resolve_fielddef(symtab_addctx *ctx, const char *prefix,
   }
 }
 
+#include <stdio.h>
 static void build_filedef(
     symtab_addctx *ctx, upb_filedef *file,
+    const upb_msglayout_ext *ext_layouts,
     const google_protobuf_FileDescriptorProto *file_proto) {
-  const google_protobuf_FileOptions *file_options_proto;
   const google_protobuf_DescriptorProto *const *msgs;
   const google_protobuf_EnumDescriptorProto *const *enums;
   const google_protobuf_FieldDescriptorProto *const *exts;
@@ -1932,6 +1994,17 @@ static void build_filedef(
   file->msgs = symtab_alloc(ctx, sizeof(*file->msgs) * file->msg_count);
   file->enums = symtab_alloc(ctx, sizeof(*file->enums) * file->enum_count);
   file->exts = symtab_alloc(ctx, sizeof(*file->exts) * file->ext_count);
+
+  if (ext_layouts || file->ext_count == 0) {
+    /* We are pointing to existing ext layouts (or don't need any) */
+    ctx->ext_layouts = NULL;
+    file->ext_layouts = ext_layouts;
+  } else {
+    /* We are building ext layouts from scratch. */
+    ctx->ext_layouts =
+        symtab_alloc(ctx, sizeof(*ctx->ext_layouts) * file->ext_count);
+    file->ext_layouts = ctx->ext_layouts;
+  }
 
   /* In the second pass we increment these as defs are added. */
   file->msg_count = 0;
@@ -1973,17 +2046,10 @@ static void build_filedef(
   }
 
   /* Read options. */
-  file_options_proto = google_protobuf_FileDescriptorProto_options(file_proto);
-  if (file_options_proto) {
-    if (google_protobuf_FileOptions_has_php_class_prefix(file_options_proto)) {
-      file->phpprefix = strviewdup(
-          ctx,
-          google_protobuf_FileOptions_php_class_prefix(file_options_proto));
-    }
-    if (google_protobuf_FileOptions_has_php_namespace(file_options_proto)) {
-      file->phpnamespace = strviewdup(
-          ctx, google_protobuf_FileOptions_php_namespace(file_options_proto));
-    }
+  if (google_protobuf_FileDescriptorProto_has_options(file_proto)) {
+
+  } else {
+    file->opts = (const google_protobuf_FileOptions*)&opt_default;
   }
 
   /* Verify dependencies. */
@@ -2017,7 +2083,6 @@ static void build_filedef(
 
   /* Create extensions. */
   exts = google_protobuf_FileDescriptorProto_extension(file_proto, &n);
-  file->exts = symtab_alloc(ctx, sizeof(*file->exts) * n);
   for (i = 0; i < n; i++) {
     create_fielddef(ctx, file->package, NULL, exts[i]);
   }
@@ -2026,6 +2091,9 @@ static void build_filedef(
   for (i = 0; i < (size_t)file->ext_count; i++) {
     resolve_fielddef(ctx, file->package, (upb_fielddef*)&file->exts[i]);
   }
+
+  CHK_OOM(
+      _upb_extreg_add(ctx->symtab->extreg, file->ext_layouts, file->ext_count));
 
   for (i = 0; i < (size_t)file->msg_count; i++) {
     const upb_msgdef *m = &file->msgs[i];
@@ -2061,7 +2129,8 @@ static void remove_filedef(upb_symtab *s, upb_filedef *file) {
 
 static const upb_filedef *_upb_symtab_addfile(
     upb_symtab *s, const google_protobuf_FileDescriptorProto *file_proto,
-    const upb_msglayout **layouts, upb_status *status) {
+    const upb_msglayout **layouts, const upb_msglayout_ext *ext_layouts,
+    upb_status *status) {
   symtab_addctx ctx;
   upb_strview name = google_protobuf_FileDescriptorProto_name(file_proto);
 
@@ -2073,6 +2142,7 @@ static const upb_filedef *_upb_symtab_addfile(
 
   ctx.symtab = s;
   ctx.layouts = layouts;
+  ctx.ext_index = 0;
   ctx.status = status;
   ctx.file = NULL;
   ctx.arena = upb_arena_new();
@@ -2090,7 +2160,7 @@ static const upb_filedef *_upb_symtab_addfile(
     }
   } else {
     ctx.file = symtab_alloc(&ctx, sizeof(*ctx.file));
-    build_filedef(&ctx, ctx.file, file_proto);
+    build_filedef(&ctx, ctx.file, ext_layouts, file_proto);
     upb_strtable_insert(&s->files, name.data, name.size,
                         upb_value_constptr(ctx.file), ctx.arena);
     UPB_ASSERT(upb_ok(status));
@@ -2104,7 +2174,7 @@ static const upb_filedef *_upb_symtab_addfile(
 const upb_filedef *upb_symtab_addfile(
     upb_symtab *s, const google_protobuf_FileDescriptorProto *file_proto,
     upb_status *status) {
-  return _upb_symtab_addfile(s, file_proto, NULL, status);
+  return _upb_symtab_addfile(s, file_proto, NULL, NULL, status);
 }
 
 /* Include here since we want most of this file to be stdio-free. */
@@ -2144,7 +2214,10 @@ bool _upb_symtab_loaddefinit(upb_symtab *s, const upb_def_init *init) {
     goto err;
   }
 
-  if (!_upb_symtab_addfile(s, file, init->layouts, &status)) goto err;
+  if (!_upb_symtab_addfile(s, file, init->layouts, init->ext_layouts,
+                           &status)) {
+    goto err;
+  }
 
   upb_arena_free(arena);
   return true;
@@ -2162,6 +2235,18 @@ size_t _upb_symtab_bytesloaded(const upb_symtab *s) {
 
 upb_arena *_upb_symtab_arena(const upb_symtab *s) {
   return s->arena;
+}
+
+const upb_fielddef *_upb_symtab_lookupextfield(const upb_symtab *s,
+                                               const upb_msglayout_ext *ext) {
+  upb_value v;
+  bool ok = upb_inttable_lookup(&s->exts, (uintptr_t)ext, &v);
+  UPB_ASSERT(ok);
+  return upb_value_getconstptr(v);
+}
+
+const upb_extreg *upb_symtab_extreg(const upb_symtab *s) {
+  return s->extreg;
 }
 
 #undef CHK_OOM

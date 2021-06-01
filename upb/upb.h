@@ -47,7 +47,7 @@ extern "C" {
 
 /* upb_status *****************************************************************/
 
-#define UPB_STATUS_MAX_MESSAGE 127
+#define UPB_STATUS_MAX_MESSAGE 255
 
 typedef struct {
   bool ok;

@@ -26,6 +26,7 @@
 #include <memory>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/substitute.h"
 #include "google/protobuf/compiler/code_generator.h"
@@ -541,7 +542,7 @@ void WriteHeader(const protobuf::FileDescriptor* file, Output& output) {
       "#endif\n"
       "\n");
 
-  std::vector<const protobuf::Descriptor*> this_file_messages =
+  const std::vector<const protobuf::Descriptor*> this_file_messages =
       SortedMessages(file);
 
   // Forward-declare types defined in this file.
@@ -559,7 +560,7 @@ void WriteHeader(const protobuf::FileDescriptor* file, Output& output) {
   // Order by full name for consistent ordering.
   std::map<std::string, const protobuf::Descriptor*> forward_messages;
 
-  for (auto message : SortedMessages(file)) {
+  for (auto message : this_file_messages) {
     for (int i = 0; i < message->field_count(); i++) {
       const protobuf::FieldDescriptor* field = message->field(i);
       if (field->cpp_type() == protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
@@ -594,6 +595,39 @@ void WriteHeader(const protobuf::FileDescriptor* file, Output& output) {
   for (auto message : this_file_messages) {
     GenerateMessageInHeader(message, output);
   }
+
+  if (file->name() == protobuf::FileDescriptorProto::descriptor()->file()->name()) {
+    // This is gratuitously inefficient with how many times it rebuilds
+    // MessageLayout objects for the same message. But we only do this for one
+    // proto (descriptor.proto) so we don't worry about it.
+    const protobuf::Descriptor* max32 = nullptr;
+    const protobuf::Descriptor* max64 = nullptr;
+    for (auto message : this_file_messages) {
+      if (absl::EndsWith(message->name(), "Options")) {
+        if (max32 == nullptr) {
+          max32 = message;
+          max64 = message;
+        } else {
+          if (MessageLayout(message).message_size().size32 >
+              MessageLayout(max32).message_size().size32) {
+            max32 = message;
+          }
+          if (MessageLayout(message).message_size().size64 >
+              MessageLayout(max64).message_size().size64) {
+            max64 = message;
+          }
+        }
+      }
+    }
+
+    output("/* Max size 32 is $0 */\n", max32->full_name());
+    output("/* Max size 64 is $0 */\n", max64->full_name());
+    MessageLayout::Size size;
+    size.size32 = MessageLayout(max32).message_size().size32;
+    size.size64 = MessageLayout(max32).message_size().size64;
+    output("#define _UPB_MAXOPT_SIZE $0\n\n", GetSizeInit(size));
+  }
+
 
   output(
       "#ifdef __cplusplus\n"
@@ -848,6 +882,189 @@ std::vector<TableEntry> FastDecodeTable(const protobuf::Descriptor* message,
   return table;
 }
 
+void WriteField(const protobuf::FieldDescriptor* field,
+                absl::string_view offset, absl::string_view presence,
+                int submsg_index, Output& output) {
+  std::string mode;
+  if (field->is_map()) {
+    mode = "_UPB_MODE_MAP";
+  } else if (field->is_repeated()) {
+    mode = "_UPB_MODE_ARRAY";
+  } else {
+    mode = "_UPB_MODE_SCALAR";
+  }
+
+  if (field->is_packed()) {
+    absl::StrAppend(&mode, " | _UPB_MODE_IS_PACKED");
+  }
+
+  if (field->is_extension()) {
+    absl::StrAppend(&mode, " | _UPB_MODE_IS_EXTENSION");
+  }
+
+  output("{$0, $1, $2, $3, $4, $5}", field->number(), offset, presence,
+         submsg_index, TableDescriptorType(field), mode);
+}
+
+// Writes a single field into a .upb.c source file.
+void WriteMessageField(const protobuf::FieldDescriptor* field,
+                       const MessageLayout& layout, int submsg_index,
+                       Output& output) {
+  std::string presence = "0";
+
+  if (MessageLayout::HasHasbit(field)) {
+    int index = layout.GetHasbitIndex(field);
+    assert(index != 0);
+    presence = absl::StrCat(index);
+  } else if (field->real_containing_oneof()) {
+    MessageLayout::Size case_offset =
+        layout.GetOneofCaseOffset(field->real_containing_oneof());
+
+    // We encode as negative to distinguish from hasbits.
+    case_offset.size32 = ~case_offset.size32;
+    case_offset.size64 = ~case_offset.size64;
+    assert(case_offset.size32 < 0);
+    assert(case_offset.size64 < 0);
+    presence = GetSizeInit(case_offset);
+  }
+
+  output("  ");
+  WriteField(field, GetSizeInit(layout.GetFieldOffset(field)), presence,
+             submsg_index, output);
+  output(",\n");
+}
+
+// Writes a single message into a .upb.c source file.
+void WriteMessage(const protobuf::Descriptor* message, Output& output,
+                  bool fasttable_enabled) {
+  std::string msgname = ToCIdent(message->full_name());
+  std::string fields_array_ref = "NULL";
+  std::string submsgs_array_ref = "NULL";
+  uint8_t dense_below = 0;
+  MessageLayout layout(message);
+  SubmsgArray submsg_array(message);
+
+  if (!submsg_array.submsgs().empty()) {
+    // TODO(haberman): could save a little bit of space by only generating a
+    // "submsgs" array for every strongly-connected component.
+    std::string submsgs_array_name = msgname + "_submsgs";
+    submsgs_array_ref = "&" + submsgs_array_name + "[0]";
+    output("static const upb_msglayout *const $0[$1] = {\n",
+           submsgs_array_name, submsg_array.submsgs().size());
+
+    for (auto submsg : submsg_array.submsgs()) {
+      output("  &$0,\n", MessageInit(submsg));
+    }
+
+    output("};\n\n");
+  }
+
+  std::vector<const protobuf::FieldDescriptor*> field_number_order =
+      FieldNumberOrder(message);
+  if (!field_number_order.empty()) {
+    std::string fields_array_name = msgname + "__fields";
+    fields_array_ref = "&" + fields_array_name + "[0]";
+    output("static const upb_msglayout_field $0[$1] = {\n",
+           fields_array_name, field_number_order.size());
+    for (auto field : field_number_order) {
+      int submsg_index = 0;
+
+      if (field->number() <=
+              std::numeric_limits<decltype(dense_below)>::max() &&
+          dense_below + 1 == field->number()) {
+        dense_below = field->number();
+      }
+
+      if (field->cpp_type() == protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+        submsg_index = submsg_array.GetIndex(field);
+      }
+
+      WriteMessageField(field, layout, submsg_index, output);
+    }
+    output("};\n\n");
+  }
+
+  std::vector<TableEntry> table;
+  uint8_t table_mask = -1;
+
+  if (fasttable_enabled) {
+    table = FastDecodeTable(message, layout);
+  }
+
+  if (table.size() > 1) {
+    assert((table.size() & (table.size() - 1)) == 0);
+    table_mask = (table.size() - 1) << 3;
+  }
+
+  output("const upb_msglayout $0 = {\n", MessageInit(message));
+  output("  $0,\n", submsgs_array_ref);
+  output("  $0,\n", fields_array_ref);
+  output("  $0, $1, $2, $3, $4,\n", GetSizeInit(layout.message_size()),
+         field_number_order.size(),
+         "false",  // TODO: extendable
+         dense_below,
+         table_mask
+  );
+  if (!table.empty()) {
+    output("  UPB_FASTTABLE_INIT({\n");
+    for (const auto& ent : table) {
+      output("    {0x$1, &$0},\n", ent.first,
+             absl::StrCat(absl::Hex(ent.second, absl::kZeroPad16)));
+    }
+    output("  }),\n");
+  }
+  output("};\n\n");
+}
+
+void WriteExtension(const protobuf::FieldDescriptor* field, Output& output) {
+  output("  {\n    ");
+  WriteField(field, "0", "0", 0, output);
+  output(",\n    &$0,\n    $1", MessageInit(field->containing_type()),
+         field->message_type() ? "&" + MessageInit(field->message_type())
+                               : "NULL");
+  output("\n  },\n");
+}
+
+void WriteMessages(const protobuf::FileDescriptor* file, Output& output,
+                   bool fasttable_enabled) {
+  for (auto message : SortedMessages(file)) {
+    WriteMessage(message, output, fasttable_enabled);
+  }
+}
+
+void WriteExtensions(const protobuf::FileDescriptor* file, Output& output) {
+  auto exts = SortedExtensions(file);
+  absl::flat_hash_set<const protobuf::Descriptor*> forward_decls;
+
+  if (exts.empty()) return;
+
+  for (auto ext : exts) {
+    forward_decls.insert(ext->containing_type());
+    if (ext->message_type()) {
+      forward_decls.insert(ext->message_type());
+    }
+  }
+
+  for (auto decl : forward_decls) {
+    output("extern const upb_msglayout $0;\n", MessageInit(decl));
+  }
+
+  output(
+      "\n"
+      "const upb_msglayout_ext $0[$1] = {\n",
+      ExtensionsInit(file),
+      exts.size());
+
+  for (auto ext : exts) {
+    WriteExtension(ext, output);
+  }
+
+  output(
+      "};\n"
+      "\n");
+}
+
+// Writes a .upb.c source file.
 void WriteSource(const protobuf::FileDescriptor* file, Output& output,
                  bool fasttable_enabled) {
   EmitFileWarning(file, output);
@@ -867,126 +1084,8 @@ void WriteSource(const protobuf::FileDescriptor* file, Output& output,
       "#include \"upb/port_def.inc\"\n"
       "\n");
 
-
-  for (auto message : SortedMessages(file)) {
-    std::string msgname = ToCIdent(message->full_name());
-    std::string fields_array_ref = "NULL";
-    std::string submsgs_array_ref = "NULL";
-    uint8_t dense_below = 0;
-    MessageLayout layout(message);
-    SubmsgArray submsg_array(message);
-
-    if (!submsg_array.submsgs().empty()) {
-      // TODO(haberman): could save a little bit of space by only generating a
-      // "submsgs" array for every strongly-connected component.
-      std::string submsgs_array_name = msgname + "_submsgs";
-      submsgs_array_ref = "&" + submsgs_array_name + "[0]";
-      output("static const upb_msglayout *const $0[$1] = {\n",
-             submsgs_array_name, submsg_array.submsgs().size());
-
-      for (auto submsg : submsg_array.submsgs()) {
-        output("  &$0,\n", MessageInit(submsg));
-      }
-
-      output("};\n\n");
-    }
-
-    std::vector<const protobuf::FieldDescriptor*> field_number_order =
-        FieldNumberOrder(message);
-    if (!field_number_order.empty()) {
-      std::string fields_array_name = msgname + "__fields";
-      fields_array_ref = "&" + fields_array_name + "[0]";
-      output("static const upb_msglayout_field $0[$1] = {\n",
-             fields_array_name, field_number_order.size());
-      for (auto field : field_number_order) {
-        int submsg_index = 0;
-        std::string presence = "0";
-
-        if (field->number() <=
-                std::numeric_limits<decltype(dense_below)>::max() &&
-            dense_below + 1 == field->number()) {
-          dense_below = field->number();
-        }
-
-        if (field->cpp_type() == protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
-          submsg_index = submsg_array.GetIndex(field);
-        }
-
-        if (MessageLayout::HasHasbit(field)) {
-          int index = layout.GetHasbitIndex(field);
-          assert(index != 0);
-          presence = absl::StrCat(index);
-        } else if (field->real_containing_oneof()) {
-          MessageLayout::Size case_offset =
-              layout.GetOneofCaseOffset(field->real_containing_oneof());
-
-          // We encode as negative to distinguish from hasbits.
-          case_offset.size32 = ~case_offset.size32;
-          case_offset.size64 = ~case_offset.size64;
-          assert(case_offset.size32 < 0);
-          assert(case_offset.size64 < 0);
-          presence = GetSizeInit(case_offset);
-        }
-
-        std::string mode;
-        if (field->is_map()) {
-          mode = "_UPB_MODE_MAP";
-        } else if (field->is_repeated()) {
-          mode = "_UPB_MODE_ARRAY";
-        } else {
-          mode = "_UPB_MODE_SCALAR";
-        }
-
-        if (field->is_packed()) {
-          absl::StrAppend(&mode, " | _UPB_MODE_IS_PACKED");
-        }
-
-        if (field->is_extension()) {
-          absl::StrAppend(&mode, " | _UPB_MODE_IS_EXTENSION");
-        }
-
-        output("  {$0, $1, $2, $3, $4, $5},\n",
-               field->number(),
-               GetSizeInit(layout.GetFieldOffset(field)),
-               presence,
-               submsg_index,
-               TableDescriptorType(field),
-               mode);
-      }
-      output("};\n\n");
-    }
-
-    std::vector<TableEntry> table;
-    uint8_t table_mask = -1;
-
-    if (fasttable_enabled) {
-      table = FastDecodeTable(message, layout);
-    }
-
-    if (table.size() > 1) {
-      assert((table.size() & (table.size() - 1)) == 0);
-      table_mask = (table.size() - 1) << 3;
-    }
-
-    output("const upb_msglayout $0 = {\n", MessageInit(message));
-    output("  $0,\n", submsgs_array_ref);
-    output("  $0,\n", fields_array_ref);
-    output("  $0, $1, $2, $3, $4,\n", GetSizeInit(layout.message_size()),
-           field_number_order.size(),
-           "false",  // TODO: extendable
-           dense_below,
-           table_mask
-    );
-    if (!table.empty()) {
-      output("  UPB_FASTTABLE_INIT({\n");
-      for (const auto& ent : table) {
-        output("    {0x$1, &$0},\n", ent.first,
-               absl::StrCat(absl::Hex(ent.second, absl::kZeroPad16)));
-      }
-      output("  }),\n");
-    }
-    output("};\n\n");
-  }
+  WriteMessages(file, output, fasttable_enabled);
+  WriteExtensions(file, output);
 
   output("#include \"upb/port_undef.inc\"\n");
   output("\n");
