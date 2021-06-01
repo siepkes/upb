@@ -35,7 +35,7 @@ typedef struct {
   int16_t presence;       /* If >0, hasbit_index.  If <0, ~oneof_index. */
   uint16_t submsg_index;  /* undefined if descriptortype != MESSAGE or GROUP. */
   uint8_t descriptortype;
-  uint8_t mode;           /* upb_fieldmode below with flags from upb_labelflags */
+  int8_t mode;            /* upb_fieldmode, with flags from upb_labelflags */
 } upb_msglayout_field;
 
 typedef enum {

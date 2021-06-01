@@ -183,7 +183,7 @@ static void encode_fixedarray(upb_encstate *e, const upb_array *arr,
   }
 }
 
-static void encode_message(upb_encstate *e, const char *msg,
+static void encode_message(upb_encstate *e, const upb_msg *msg,
                            const upb_msglayout *m, size_t *size);
 
 static void encode_scalar(upb_encstate *e, const void *_field_mem,
@@ -463,7 +463,7 @@ static void encode_field(upb_encstate *e, const upb_msg *msg,
   }
 }
 
-static void encode_message(upb_encstate *e, const char *msg,
+static void encode_message(upb_encstate *e, const upb_msg *msg,
                            const upb_msglayout *m, size_t *size) {
   size_t pre_len = e->limit - e->ptr;
   const upb_msglayout_field *f = &m->fields[m->field_count];
