@@ -91,26 +91,42 @@ struct upb_msglayout {
   _upb_fasttable_entry fasttable[];
 };
 
+typedef struct {
+  upb_msglayout_field field;
+  const upb_msglayout *extendee;
+  const upb_msglayout *submsg;   /* NULL for non-submessage fields. */
+} upb_msglayout_ext;
+
 /** upb_msg *******************************************************************/
 
 /* Internal members of a upb_msg that track unknown fields and/or extensions.
- * None of this is exposed to the ABI, so we can change this without breaking
- * binary compatibility.*/
+ * We can change this without breaking binary compatibility.  We put these
+ * before the user's data.  The user's upb_msg* points after the
+ * upb_msg_internal. */
 
 typedef struct {
   /* Total size of this structure, including the data that follows.
    * Must be aligned to 8, which is alignof(upb_msg_ext) */
   uint32_t size;
 
-  /* Unknown data grows forward from the beginning to unknown_end.
+  /* Offsets relative to the beginning of this structure.
+   *
+   * Unknown data grows forward from the beginning to unknown_end.
    * Extension data grows backward from size to ext_begin.
-   * When the two meet, we're out of data and have to realloc. */
+   * When the two meet, we're out of data and have to realloc.
+   *
+   * If we imagine that the final member of this struct is:
+   *   char data[size - overhead];  // overhead = sizeof(upb_msg_internaldata)
+   * 
+   * Then we have:
+   *   unknown data: data[0 .. (unknown_end - overhead)]
+   *   extensions data: data[(ext_begin - overhead) .. (size - overhead)] */
   uint32_t unknown_end;
   uint32_t ext_begin;
-  /* Data follows. */
+  /* Data follows, as if there were an array:
+   *   char data[size - sizeof(upb_msg_internaldata)]; */
 } upb_msg_internaldata;
 
-/* Used when a message is not extendable. */
 typedef struct {
   upb_msg_internaldata *internal;
   /* Message data follows. */
@@ -153,12 +169,6 @@ bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
                          upb_arena *arena);
 
 /** upb_extreg ****************************************************************/
-
-typedef struct {
-  upb_msglayout_field field;
-  const upb_msglayout *extendee;
-  const upb_msglayout *submsg;   /* NULL for non-submessage fields. */
-} upb_msglayout_ext;
 
 /* Adds the given extension info for message type |l| and field number |num|
  * into the registry. Returns false if this message type and field number were

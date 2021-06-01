@@ -84,6 +84,7 @@ static bool realloc_internal(upb_msg *msg, size_t need, upb_arena *arena) {
 bool _upb_msg_addunknown(upb_msg *msg, const char *data, size_t len,
                          upb_arena *arena) {
   realloc_internal(msg, len, arena);
+  if (!realloc_internal(msg, len, arena)) return false;
   upb_msg_internal *in = upb_msg_getinternal(msg);
   memmove(UPB_PTR_AT(in->internal, in->internal->unknown_end, char), data, len);
   in->internal->unknown_end += len;
@@ -141,7 +142,7 @@ upb_msg_ext *_upb_msg_getorcreateext(upb_msg *msg, const upb_msglayout_ext *e,
                                      upb_arena *arena) {
   upb_msg_ext *ext = (upb_msg_ext*)_upb_msg_getext(msg, e);
   if (ext) return ext;
-  realloc_internal(msg, sizeof(upb_msg_ext), arena);
+  if (!realloc_internal(msg, sizeof(upb_msg_ext), arena)) return NULL;
   upb_msg_internal *in = upb_msg_getinternal(msg);
   in->internal->ext_begin -= sizeof(upb_msg_ext);
   ext = UPB_PTR_AT(in->internal, in->internal->ext_begin, void);
