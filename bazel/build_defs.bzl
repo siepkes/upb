@@ -8,7 +8,7 @@ UPB_DEFAULT_CPPOPTS = select({
         # copybara:strip_for_google3_begin
         "-Wextra",
         # "-Wshorten-64-to-32",  # not in GCC (and my Kokoro images doesn't have Clang)
-        "-Werror",
+        #"-Werror", # Google absl gives a warning on Illumos. Breaks the build with warnings as errors.
         "-Wno-long-long",
         # copybara:strip_end
     ],
